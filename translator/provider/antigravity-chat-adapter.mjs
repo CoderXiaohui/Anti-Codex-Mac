@@ -1,11 +1,18 @@
 import { randomUUID } from "node:crypto";
 
-import { DEFAULT_TOOL_CONTINUATION_TIMEOUT_MS } from "../antigravity-contract.mjs";
+import {
+  DEFAULT_TOOL_CONTINUATION_TIMEOUT_MS,
+  createSessionStore,
+  isNativeCodexTaskSuggestionsRequest,
+  isNativeCodexTitleRequest,
+  hasUnregisteredTools,
+  matchFollowUpConversation,
+  messageSignature,
+  toolNameSet,
+} from "../antigravity-contract.mjs";
 
 const DEFAULT_SESSION_TTL_MS = DEFAULT_TOOL_CONTINUATION_TIMEOUT_MS;
 const DEFAULT_MAX_SESSIONS = 128;
-const NATIVE_CODEX_TITLE_PROMPT_PREFIX = "You are a helpful assistant. You will be presented with a user prompt, and your job is to provide a short title for a task that will be created from that prompt.";
-const NATIVE_CODEX_TASK_SUGGESTIONS_PROMPT_PREFIX = "# Overview\n\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project:";
 
 export class ChatAdapterError extends Error {
   constructor(message, options = {}) {
@@ -34,6 +41,7 @@ export function createAntigravityChatAdapter(options = {}) {
     ttlMs: positiveInteger(options.sessionTtlMs, DEFAULT_SESSION_TTL_MS),
     setTimer: options.setTimer ?? setTimeout,
     clearTimer: options.clearTimer ?? clearTimeout,
+    createError: (msg, opts) => new ChatAdapterError(msg, opts),
   });
 
   async function account(requestOptions = {}) {
@@ -80,21 +88,43 @@ export function createAntigravityChatAdapter(options = {}) {
   }
 
   async function* stream(body, requestOptions = {}) {
-    const prepared = prepareChatRequest(body, sessions, readNativeCustomInstructions());
+    const requestedConversationKey = typeof client.followUp === "function"
+      ? String(requestOptions.conversationKey ?? "").trim()
+      : "";
+    const prepared = prepareChatRequest(
+      body,
+      sessions,
+      readNativeCustomInstructions(),
+      requestedConversationKey,
+    );
     const id = idFactory();
     const created = Math.floor(now() / 1000);
     const model = prepared.model;
     const signal = requestOptions.signal;
     const base = { id, object: "chat.completion.chunk", created, model };
     let continuation = null;
+    let completedContinuation = null;
     let terminal = false;
     let roleSent = false;
     let nativeHelperText = "";
     const resumedByOwner = prepared.kind === "resume" && prepared.claimMode === "owner";
     const replayedResume = prepared.kind === "resume" && !resumedByOwner;
+    const retainConversation = Boolean(prepared.conversationKey)
+      && typeof client.followUp === "function"
+      && !replayedResume;
+    const onTurnCompleted = retainConversation
+      ? (value) => { completedContinuation = value; }
+      : undefined;
     const replayEvents = [];
 
     try {
+      if (prepared.staleRecord) {
+        await sessions.cancelRecord(prepared.staleRecord);
+      }
+      if (prepared.staleContinuation) {
+        await Promise.resolve(client.cancel?.(prepared.staleContinuation)).catch(() => {});
+      }
+
       let events;
       if (prepared.kind === "resume") {
         continuation = prepared.record.continuation;
@@ -103,8 +133,20 @@ export function createAntigravityChatAdapter(options = {}) {
             model,
             signal,
             tools: prepared.tools,
+            ...(retainConversation ? { retainConversation: true, onTurnCompleted } : {}),
           })
           : sessions.replay(prepared.record);
+      } else if (prepared.kind === "follow_up") {
+        continuation = prepared.continuation;
+        events = client.followUp(continuation, {
+          model,
+          userText: prepared.userText,
+          userItems: prepared.userItems,
+          tools: prepared.tools,
+          retainConversation: true,
+          onTurnCompleted,
+          signal,
+        });
       } else {
         events = client.start({
           model,
@@ -115,6 +157,7 @@ export function createAntigravityChatAdapter(options = {}) {
           toolChoice: prepared.toolChoice,
           parallelToolCalls: prepared.parallelToolCalls,
           reasoningEffort: prepared.reasoningEffort,
+          ...(retainConversation ? { retainConversation: true, onTurnCompleted } : {}),
           signal,
         });
       }
@@ -165,6 +208,12 @@ export function createAntigravityChatAdapter(options = {}) {
           if (!replayedResume) {
             await sessions.put(continuation, calls, {
               replacingRecord: resumedByOwner ? prepared.record : null,
+              registeredToolNames: continuation.registeredToolNames instanceof Set
+                ? new Set(continuation.registeredToolNames)
+                : prepared.registeredToolNames,
+              hasToolBridge: prepared.hasToolBridge,
+              conversationKey: prepared.conversationKey,
+              baseSignatures: prepared.baseSignatures,
             });
           }
           if (resumedByOwner) sessions.complete(prepared.record, replayEvents);
@@ -188,6 +237,17 @@ export function createAntigravityChatAdapter(options = {}) {
           return;
         }
         if (event?.type === "done") {
+          const retainedTarget = completedContinuation
+            ?? (retainConversation && continuation?.retained ? continuation : null);
+          if (retainConversation && retainedTarget) {
+            await sessions.putConversation(prepared.conversationKey, retainedTarget, {
+              registeredToolNames: retainedTarget.registeredToolNames instanceof Set
+                ? new Set(retainedTarget.registeredToolNames)
+                : prepared.registeredToolNames,
+              hasToolBridge: prepared.hasToolBridge,
+              baseSignatures: prepared.baseSignatures,
+            });
+          }
           if (resumedByOwner) sessions.complete(prepared.record, replayEvents);
           const nativeHelperOutput = prepared.nativeHelperKind
             ? normalizeNativeCodexHelperOutput(prepared.nativeHelperKind, nativeHelperText)
@@ -274,10 +334,13 @@ export function createAntigravityChatAdapter(options = {}) {
     get sessionCount() {
       return sessions.size;
     },
+    get conversationCount() {
+      return sessions.conversationSize;
+    },
   };
 }
 
-function prepareChatRequest(body, sessions, nativeCustomInstructions) {
+function prepareChatRequest(body, sessions, nativeCustomInstructions, conversationKey = "") {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw invalidRequest("Chat Completions body must be an object.");
   }
@@ -292,6 +355,30 @@ function prepareChatRequest(body, sessions, nativeCustomInstructions) {
   const continuation = trailingToolContinuation(messages);
   if (continuation) {
     const hasUserHistory = messages.some((message) => String(message?.role ?? "").toLowerCase() === "user");
+    const peeked = sessions.peek(continuation.callIds);
+    const needsToolUpgrade = Boolean(
+      peeked
+      && peeked.state === "pending"
+      && hasUserHistory
+      && completeToolResultSet(continuation.callIds, continuation.results)
+      && hasUnregisteredTools(peeked.registeredToolNames, requestedTools),
+    );
+    if (needsToolUpgrade) {
+      const effectiveKey = String(conversationKey || peeked.conversationKey || "").trim();
+      const staleConv = effectiveKey ? sessions.takeConversation(effectiveKey) : null;
+      return {
+        ...prepareRestartContinuation(
+          body,
+          messages,
+          model,
+          requestedTools,
+          nativeCustomInstructions,
+          effectiveKey,
+        ),
+        staleRecord: peeked,
+        staleContinuation: staleConv?.continuation ?? null,
+      };
+    }
     const claim = sessions.claim(continuation.callIds, continuation.results, {
       allowMissing: hasUserHistory,
     });
@@ -307,6 +394,10 @@ function prepareChatRequest(body, sessions, nativeCustomInstructions) {
           isError: false,
         })),
         tools: requestedTools,
+        registeredToolNames: claim.record.registeredToolNames,
+        hasToolBridge: claim.record.hasToolBridge,
+        conversationKey: String(conversationKey || claim.record.conversationKey || "").trim(),
+        baseSignatures: claim.record.baseSignatures,
       };
     }
     if (!completeToolResultSet(continuation.callIds, continuation.results)) {
@@ -315,7 +406,19 @@ function prepareChatRequest(body, sessions, nativeCustomInstructions) {
         code: "incomplete_tool_results",
       });
     }
-    return prepareRestartContinuation(body, messages, model, requestedTools, nativeCustomInstructions);
+    const effectiveKey = String(conversationKey || "").trim();
+    const staleConv = effectiveKey ? sessions.takeConversation(effectiveKey) : null;
+    return {
+      ...prepareRestartContinuation(
+        body,
+        messages,
+        model,
+        requestedTools,
+        nativeCustomInstructions,
+        effectiveKey,
+      ),
+      staleContinuation: staleConv?.continuation ?? null,
+    };
   }
 
   let currentUserIndex = -1;
@@ -326,18 +429,23 @@ function prepareChatRequest(body, sessions, nativeCustomInstructions) {
     }
   }
   if (currentUserIndex < 0) throw invalidRequest("A current user message is required.");
-  const userContent = normalizeUserContent(messages[currentUserIndex]?.content);
-  const userText = userContent.text;
+  const rawCurrentUser = messages[currentUserIndex];
   const systemSections = [];
+  const rawUserContent = normalizeUserContent(rawCurrentUser?.content);
   const suppliedStructuredOutput = normalizeStructuredOutput(body.response_format);
-  const nativeTitleHelper = isNativeCodexTitleRequest(userText, suppliedStructuredOutput);
-  const nativeTaskSuggestionsHelper = isNativeCodexTaskSuggestionsRequest(userText, suppliedStructuredOutput);
+  const nativeTitleHelper = isNativeCodexTitleRequest(rawUserContent.text, suppliedStructuredOutput);
+  const nativeTaskSuggestionsHelper = isNativeCodexTaskSuggestionsRequest(rawUserContent.text, suppliedStructuredOutput);
   const nativeTextOnlyHelper = nativeTitleHelper || nativeTaskSuggestionsHelper;
   const trustedNativeInstructions = addNativeCustomInstructions(
     systemSections,
     nativeCustomInstructions,
     !nativeTextOnlyHelper,
   );
+  const strippedCurrentUser = stripExactNativeCustomInstructions(rawCurrentUser, trustedNativeInstructions) ?? rawCurrentUser;
+  const userContent = strippedCurrentUser === rawCurrentUser
+    ? rawUserContent
+    : normalizeUserContent(strippedCurrentUser?.content, { allowEmpty: true });
+  const userText = userContent.text;
   const structuredOutput = suppliedStructuredOutput
     ?? (body.response_format === undefined || body.response_format === null
       ? nativeTitleHelper
@@ -365,6 +473,43 @@ function prepareChatRequest(body, sessions, nativeCustomInstructions) {
     const historyMessage = stripExactNativeCustomInstructions(message, trustedNativeInstructions);
     if (historyMessage) history.push(normalizeHistoryMessage(historyMessage));
   }
+
+  const effectiveConversationKey = !nativeTextOnlyHelper
+    ? String(conversationKey || "").trim()
+    : "";
+  const normalizedCurrentHistoryEntry = normalizeHistoryMessage(strippedCurrentUser);
+  const nextBaseSignatures = effectiveConversationKey
+    ? [...history.map(messageSignature), messageSignature(normalizedCurrentHistoryEntry)]
+    : null;
+  let staleContinuation = null;
+
+  if (effectiveConversationKey) {
+    const existingConversation = sessions.takeConversation(effectiveConversationKey);
+    if (existingConversation) {
+      const followUpItems = matchFollowUpConversation(existingConversation, {
+        tools,
+        history,
+        userItems: userContent.items,
+        structuredOutput,
+      });
+      if (followUpItems) {
+        return {
+          kind: "follow_up",
+          model,
+          continuation: existingConversation.continuation,
+          registeredToolNames: existingConversation.registeredToolNames,
+          hasToolBridge: existingConversation.hasToolBridge,
+          conversationKey: effectiveConversationKey,
+          baseSignatures: nextBaseSignatures,
+          userText,
+          userItems: followUpItems,
+          tools,
+        };
+      }
+      staleContinuation = existingConversation.continuation;
+    }
+  }
+
   if (history.length) {
     systemSections.push({
       kind: "chat_history",
@@ -382,6 +527,11 @@ function prepareChatRequest(body, sessions, nativeCustomInstructions) {
     userItems: userContent.items,
     systemSections,
     tools,
+    registeredToolNames: toolNameSet(tools),
+    hasToolBridge: tools.length > 0,
+    conversationKey: effectiveConversationKey,
+    baseSignatures: nextBaseSignatures,
+    staleContinuation,
     toolChoice: nativeTextOnlyHelper ? "none" : normalizeToolChoice(body.tool_choice),
     parallelToolCalls: nativeTextOnlyHelper ? false : body.parallel_tool_calls !== false,
     reasoningEffort: String(body.reasoning_effort ?? body.reasoning?.effort ?? "").trim(),
@@ -548,50 +698,7 @@ function compactHelperText(value, maxLength) {
   return [...text].slice(0, maxLength).join("");
 }
 
-function isNativeCodexTitleRequest(userText, structuredOutput) {
-  const text = String(userText || "");
-  const promptPrefixMatches = text.startsWith(NATIVE_CODEX_TITLE_PROMPT_PREFIX)
-    && /Do NOT respond to the user, answer questions, or attempt to solve the problem; just write a title/i.test(text);
-  if (!promptPrefixMatches) return false;
-  const currentPromptContractMatches = [
-    "Generate a concise UI title (up to 36 characters) for this task.",
-    "Fill the structured title field with plain text.",
-    "Fill the structured description field with a compact, search-oriented summary (up to 100 characters).",
-    "User prompt:",
-  ].every((marker) => text.includes(marker));
-  if (currentPromptContractMatches) return true;
-
-  const properties = structuredOutput?.schema?.properties;
-  return structuredOutput?.type === "json_schema"
-    && properties && typeof properties === "object"
-    && Object.hasOwn(properties, "title")
-    && Object.hasOwn(properties, "description");
-}
-
-function isNativeCodexTaskSuggestionsRequest(userText, structuredOutput) {
-  const text = String(userText || "");
-  const promptPrefixMatches = text.startsWith(NATIVE_CODEX_TASK_SUGGESTIONS_PROMPT_PREFIX)
-    && /Return 0 to 3 fresh suggestions\./i.test(text);
-  if (!promptPrefixMatches) return false;
-  const currentPromptContractMatches = [
-    "# Response format",
-    "Each suggestion must include:",
-    "- prompt: the user message to send",
-    "- appId: the single most relevant app id",
-    "- write the prompt as something that should launch as a new Codex task in this project",
-  ].every((marker) => text.includes(marker));
-  if (currentPromptContractMatches) return true;
-
-  const suggestions = structuredOutput?.schema?.properties?.suggestions;
-  const itemProperties = suggestions?.items?.properties;
-  return structuredOutput?.type === "json_schema"
-    && suggestions?.type === "array"
-    && Number(suggestions?.maxItems) === 3
-    && itemProperties && typeof itemProperties === "object"
-    && ["title", "description", "prompt", "appId"].every((name) => Object.hasOwn(itemProperties, name));
-}
-
-function prepareRestartContinuation(body, messages, model, tools, nativeCustomInstructions) {
+function prepareRestartContinuation(body, messages, model, tools, nativeCustomInstructions, conversationKey = "") {
   const systemSections = [];
   const trustedNativeInstructions = addNativeCustomInstructions(systemSections, nativeCustomInstructions);
   const history = [];
@@ -623,12 +730,17 @@ function prepareRestartContinuation(body, messages, model, tools, nativeCustomIn
     contentTrust: "untrusted_transcript",
     messages: history,
   });
+  const effectiveKey = String(conversationKey || "").trim();
   return {
     kind: "start",
     model,
     userText: "Continue the Chat Completions turn after the completed tool results in the supplied transcript.",
     systemSections,
     tools,
+    registeredToolNames: toolNameSet(tools),
+    hasToolBridge: tools.length > 0,
+    conversationKey: effectiveKey,
+    baseSignatures: effectiveKey ? history.map(messageSignature) : null,
     toolChoice: normalizeToolChoice(body.tool_choice),
     parallelToolCalls: body.parallel_tool_calls !== false,
     reasoningEffort: String(body.reasoning_effort ?? body.reasoning?.effort ?? "").trim(),
@@ -916,176 +1028,6 @@ function normalizeReturnedToolName(value) {
     "functions.exec": "exec_command",
     "functions.apply_patch": "apply_patch",
   }[name] ?? name;
-}
-
-function createSessionStore({ client, maxSessions, ttlMs, setTimer, clearTimer }) {
-  const records = new Map();
-  const byCallId = new Map();
-  let sequence = 0;
-
-  function remove(record) {
-    if (!record || !records.delete(record.id)) return false;
-    clearTimer(record.timer);
-    for (const call of record.calls) byCallId.delete(call.callId);
-    return true;
-  }
-
-  async function cancel(record) {
-    const shouldCancel = record?.state !== "completed";
-    if (record?.state === "claimed") {
-      record.replayDeferred?.reject(new ChatAdapterError("The opaque Cascade continuation expired before completion.", {
-        statusCode: 409,
-        code: "cascade_session_expired",
-      }));
-    }
-    if (!remove(record)) return;
-    if (shouldCancel) await Promise.resolve(client.cancel?.(record.continuation)).catch(() => {});
-  }
-
-  async function put(continuation, calls, options = {}) {
-    for (const call of calls) {
-      if (byCallId.has(call.callId)) {
-        throw new ChatAdapterError(`Duplicate pending tool call ID: ${call.callId}`, {
-          statusCode: 409,
-          code: "duplicate_tool_call_id",
-        });
-      }
-    }
-    const replacingRecord = options.replacingRecord || null;
-    const activeRecords = () => [...records.values()]
-      .filter((record) => record.state !== "completed" && record !== replacingRecord);
-    while (activeRecords().length >= maxSessions) {
-      await cancel(activeRecords()[0]);
-    }
-    const completedRecords = [...records.values()].filter((record) => record.state === "completed");
-    while (completedRecords.length >= maxSessions) {
-      remove(completedRecords.shift());
-    }
-    const record = {
-      id: ++sequence,
-      continuation,
-      calls,
-      timer: null,
-      state: "pending",
-      claimedResults: null,
-      replayDeferred: null,
-      replayEvents: null,
-    };
-    record.timer = setTimer(() => cancel(record), ttlMs);
-    record.timer?.unref?.();
-    records.set(record.id, record);
-    for (const call of calls) byCallId.set(call.callId, record);
-  }
-
-  function claim(callIds, results, options = {}) {
-    const record = callIds.map((id) => byCallId.get(id)).find(Boolean);
-    if (!record) {
-      if (options.allowMissing === true) return null;
-      throw new ChatAdapterError("The opaque Cascade continuation is missing or expired.", {
-        statusCode: 409,
-        code: "cascade_session_missing",
-      });
-    }
-    const expected = new Set(record.calls.map((call) => call.callId));
-    const supplied = new Set(results.keys());
-    const complete = expected.size === supplied.size
-      && [...expected].every((id) => supplied.has(id))
-      && callIds.length === expected.size
-      && callIds.every((id) => expected.has(id));
-    if (!complete) {
-      throw new ChatAdapterError("Every pending tool call result from the same Cascade is required.", {
-        statusCode: 409,
-        code: "incomplete_tool_results",
-      });
-    }
-    if (record.state === "pending") {
-      record.state = "claimed";
-      record.claimedResults = new Map(results);
-      record.replayDeferred = createDeferred();
-      record.replayDeferred.promise.catch(() => {});
-      return { mode: "owner", record };
-    }
-    const sameResults = record.claimedResults instanceof Map
-      && record.claimedResults.size === results.size
-      && [...record.claimedResults].every(([id, value]) => toolResultEqual(results.get(id), value));
-    if (!sameResults) {
-      throw new ChatAdapterError("The same tool call IDs were continued with different results.", {
-        statusCode: 409,
-        code: "conflicting_tool_results",
-      });
-    }
-    return { mode: record.state === "completed" ? "replay" : "wait", record };
-  }
-
-  function complete(record, events) {
-    if (!record || record.state !== "claimed" || !records.has(record.id)) return false;
-    record.state = "completed";
-    record.replayEvents = [...events];
-    clearTimer(record.timer);
-    record.timer = setTimer(() => remove(record), ttlMs);
-    record.timer?.unref?.();
-    record.replayDeferred.resolve(record.replayEvents);
-    const completedRecords = [...records.values()].filter((item) => item.state === "completed");
-    while (completedRecords.length > maxSessions) remove(completedRecords.shift());
-    return true;
-  }
-
-  function fail(record, error) {
-    if (!record || record.state !== "claimed" || !records.has(record.id)) return false;
-    record.replayDeferred.reject(error);
-    return remove(record);
-  }
-
-  async function* replay(record) {
-    if (!record || !records.has(record.id)) {
-      throw new ChatAdapterError("The opaque Cascade continuation replay is missing or expired.", {
-        statusCode: 409,
-        code: "cascade_session_missing",
-      });
-    }
-    const events = record.state === "completed"
-      ? record.replayEvents
-      : await record.replayDeferred.promise;
-    for (const event of events || []) yield event;
-  }
-
-  async function close() {
-    for (const record of [...records.values()]) {
-      if (record.state === "completed") remove(record);
-      else await cancel(record);
-    }
-  }
-
-  return {
-    put,
-    claim,
-    complete,
-    fail,
-    replay,
-    close,
-    get size() {
-      return [...records.values()].filter((record) => record.state !== "completed").length;
-    },
-  };
-}
-
-function toolResultEqual(left, right) {
-  if (left === right) return true;
-  try {
-    return JSON.stringify(left) === JSON.stringify(right);
-  } catch {
-    return false;
-  }
-}
-
-function createDeferred() {
-  let resolve;
-  let reject;
-  const promise = new Promise((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
 }
 
 function chunk(base, delta, finishReason, usage) {

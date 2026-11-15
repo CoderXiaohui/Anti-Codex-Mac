@@ -500,6 +500,81 @@ test("client disconnect aborts the in-flight Cascade request", async () => {
   }
 });
 
+test("forwards thread-id session headers so same-channel turns reuse one Cascade conversation", async () => {
+  const continuations = [];
+  const followUps = [];
+  const client = {
+    starts: 0,
+    async listModels() {
+      return [{ id: "gemini-pro-agent", displayName: "Gemini Pro" }];
+    },
+    start(request) {
+      this.starts += 1;
+      const cont = { cascadeId: `cascade_${this.starts}`, retained: true };
+      continuations.push(cont);
+      return (async function* () {
+        yield { type: "ready" };
+        yield { type: "text_delta", delta: "first answer" };
+        request.onTurnCompleted?.(cont);
+        yield { type: "done" };
+      }());
+    },
+    resume() {
+      return (async function* () { yield { type: "done" }; }());
+    },
+    followUp(continuation, request) {
+      followUps.push({ continuation, request });
+      return (async function* () {
+        yield { type: "ready" };
+        yield { type: "text_delta", delta: "second answer" };
+        request.onTurnCompleted?.(continuation);
+        yield { type: "done" };
+      }());
+    },
+    async cancel() {},
+  };
+  const server = await createAntigravityChatServer({ adapter: adapterFor(client) });
+  try {
+    const firstResp = await authorizedFetch(server, "/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "thread-id": "01a1e08f-b4bb-7892-9d1a-74de7b319e00",
+      },
+      body: JSON.stringify({
+        model: "gemini-pro-agent",
+        messages: [{ role: "user", content: "first question" }],
+      }),
+    });
+    assert.equal(firstResp.status, 200);
+    assert.equal((await firstResp.json()).choices[0].message.content, "first answer");
+
+    const secondResp = await authorizedFetch(server, "/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "thread-id": "01a1e08f-b4bb-7892-9d1a-74de7b319e00",
+      },
+      body: JSON.stringify({
+        model: "gemini-pro-agent",
+        messages: [
+          { role: "user", content: "first question" },
+          { role: "assistant", content: "first answer" },
+          { role: "user", content: "follow-up question in same channel" },
+        ],
+      }),
+    });
+    assert.equal(secondResp.status, 200);
+    assert.equal((await secondResp.json()).choices[0].message.content, "second answer");
+    assert.equal(client.starts, 1);
+    assert.equal(followUps.length, 1);
+    assert.equal(followUps[0].continuation, continuations[0]);
+    assert.equal(followUps[0].request.userText, "follow-up question in same channel");
+  } finally {
+    await server.close();
+  }
+});
+
 function adapterFor(client) {
   let id = 0;
   return createAntigravityChatAdapter({

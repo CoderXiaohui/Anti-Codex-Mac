@@ -1080,6 +1080,150 @@ function waitingToolStep(id, name, argumentsValue, stepIndex) {
   };
 }
 
+test("followUp sends a second message on the same Cascade and streams only new-turn steps", async () => {
+  let turn = 1;
+  const bridge = fakeBridge();
+  const service = fakeService({
+    GetAvailableModels: () => jsonResponse(modelPayload()),
+    StartCascade: () => jsonResponse({ cascadeId: "cascade_multi_turn" }),
+    SendUserCascadeMessage: () => jsonResponse({}),
+    WaitForConversationFullyIdle: () => jsonResponse({}),
+    GetCascadeTrajectory: () => jsonResponse({
+      trajectory: {
+        trajectoryId: "traj_multi",
+        steps: turn === 1
+          ? [
+              { type: "CORTEX_STEP_TYPE_USER_INPUT", status: "CORTEX_STEP_STATUS_DONE" },
+              {
+                type: "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+                status: "CORTEX_STEP_STATUS_DONE",
+                plannerResponse: { response: "first turn answer" },
+              },
+            ]
+          : [
+              { type: "CORTEX_STEP_TYPE_USER_INPUT", status: "CORTEX_STEP_STATUS_DONE" },
+              {
+                type: "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+                status: "CORTEX_STEP_STATUS_DONE",
+                plannerResponse: { response: "first turn answer" },
+              },
+              { type: "CORTEX_STEP_TYPE_USER_INPUT", status: "CORTEX_STEP_STATUS_DONE" },
+              {
+                type: "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+                status: "CORTEX_STEP_STATUS_DONE",
+                plannerResponse: { response: "second turn answer" },
+              },
+            ],
+      },
+    }),
+    CancelCascadeInvocation: () => jsonResponse({}),
+  });
+  const client = clientFor(service.fetch, { createToolBridge: async () => bridge });
+
+  let retained = null;
+  const turn1Events = await collect(client.start({
+    model: "gemini-pro-agent",
+    userText: "turn 1",
+    tools: [{ type: "function", function: { name: "read_file", parameters: { type: "object" } } }],
+    retainConversation: true,
+    onTurnCompleted: (cont) => { retained = cont; },
+  }));
+  assert.deepEqual(turn1Events, [
+    { type: "ready" },
+    { type: "text_delta", delta: "first turn answer" },
+    { type: "done", result: { cascadeId: "cascade_multi_turn", model: "gemini-pro-agent" } },
+  ]);
+  assert.ok(retained);
+  assert.equal(bridge.closed, false);
+
+  turn = 2;
+  const turn2Events = await collect(client.followUp(retained, {
+    model: "gemini-flash-agent",
+    userText: "turn 2",
+    tools: [{ type: "function", function: { name: "read_file", parameters: { type: "object" } } }],
+    retainConversation: false,
+  }));
+  assert.deepEqual(turn2Events, [
+    { type: "ready" },
+    { type: "text_delta", delta: "second turn answer" },
+    { type: "done", result: { cascadeId: "cascade_multi_turn", model: "gemini-flash-agent" } },
+  ]);
+  assert.equal(service.calls.filter((c) => c.method === "StartCascade").length, 1);
+  const sendCalls = service.calls.filter((c) => c.method === "SendUserCascadeMessage");
+  assert.equal(sendCalls.length, 2);
+  assert.equal(sendCalls[1].body.customAgentSpec, undefined);
+  assert.equal(sendCalls[1].body.cascadeConfig.plannerConfig.planModel, "MODEL_FLASH");
+  assert.equal(bridge.closed, true);
+});
+
+test("compacts oversized chat_history prompt sections so StartCascade never exhausts maxMessageTokens", async () => {
+  const service = fakeService({
+    GetAvailableModels: () => jsonResponse({
+      response: {
+        models: {
+          "gemini-4-carbon-high": {
+            model: "MODEL_CARBON",
+            displayName: "Gemini 4 Carbon",
+            maxTokens: 1_048_576,
+            maxOutputTokens: 262_144,
+          },
+        },
+        agentModelSorts: [{ groups: [{ modelIds: ["gemini-4-carbon-high"] }] }],
+      },
+    }),
+    StartCascade: () => jsonResponse({ cascadeId: "cascade_compacted" }),
+    SendUserCascadeMessage: () => jsonResponse({}),
+    WaitForConversationFullyIdle: () => jsonResponse({}),
+    GetCascadeTrajectory: () => jsonResponse(completedTrajectory("handled huge history")),
+  });
+  const client = clientFor(service.fetch);
+
+  const hugeHistory = [{ role: "user", content: "Initial goal: inspect BPS deployment safely" }];
+  for (let i = 0; i < 40; i += 1) {
+    hugeHistory.push({
+      role: "assistant",
+      content: "",
+      tool_calls: [{ id: `call_${i}`, type: "function", function: { name: "exec_command", arguments: "{}" } }],
+    });
+    hugeHistory.push({
+      role: "tool",
+      tool_call_id: `call_${i}`,
+      content: `log-line-${i}: ${"X".repeat(30_000)}`,
+    });
+  }
+  hugeHistory.push({ role: "assistant", content: "Latest summary before follow-up" });
+
+  const events = await collect(client.start({
+    model: "gemini-4-carbon-high",
+    userText: "那个 SIWC 是什么东西",
+    systemSections: [
+      { role: "developer", title: "Codex developer instructions", content: "D".repeat(60_000) },
+      {
+        kind: "chat_history",
+        role: "internal",
+        title: "Prior Chat Completions messages",
+        contentTrust: "untrusted_transcript",
+        messages: hugeHistory,
+      },
+    ],
+    tools: [],
+  }));
+
+  assert.equal(events.at(-1)?.type, "done");
+  const start = service.calls.find((c) => c.method === "StartCascade");
+  const sections = start.body.customAgentSpec.customAgent.systemPromptSections;
+  const historySection = sections.find((s) => s.title === "Prior Chat Completions messages");
+  assert.ok(historySection);
+  assert.ok(historySection.content.length < 400_000, `compacted length was ${historySection.content.length}`);
+  assert.match(historySection.content, /Initial goal: inspect BPS deployment safely/);
+  assert.match(historySection.content, /Latest summary before follow-up/);
+  const totalEstimatedTokens = sections.reduce(
+    (sum, s) => sum + cascadeClientModule.estimatePromptTokens(s.content),
+    0,
+  );
+  assert.ok(totalEstimatedTokens <= 205_000, `total prompt tokens ${totalEstimatedTokens} must stay strictly bounded`);
+});
+
 function fakeService(handlers) {
   const calls = [];
   return {

@@ -13,7 +13,12 @@ import {
   createAntigravityNativeMcpBridge,
   withAntigravitySystemPromptSections,
 } from "../antigravity-native-mcp-bridge.mjs";
-import { DEFAULT_TOOL_CONTINUATION_TIMEOUT_MS } from "../antigravity-contract.mjs";
+import {
+  DEFAULT_TOOL_CONTINUATION_TIMEOUT_MS,
+  estimatePromptTokens,
+  renderBoundedSystemPromptSections as renderSystemPromptSections,
+} from "../antigravity-contract.mjs";
+export { estimatePromptTokens };
 import { extractAvailableAgentModels } from "../antigravity-model-catalog.mjs";
 import { recordPromptSnapshot } from "./anticodex-prompt-policy.mjs";
 
@@ -108,7 +113,11 @@ export function createAntigravityCascadeClient(options = {}) {
     const model = resolveModel(modelEntries, request.model);
     const maxMessageTokens = requirePositiveModelTokenLimit(model.maxTokens, model.id);
     const activeConnection = connection();
-    const originalPromptSections = renderSystemPromptSections(request.systemSections);
+    const originalPromptSections = renderSystemPromptSections(request.systemSections, {
+      model,
+      maxMessageTokens,
+      tools: request.tools,
+    });
     const systemPromptSections = withToolCompatibilitySection(originalPromptSections, request.tools);
     recordPromptSnapshot(promptStateRoot, originalPromptSections, systemPromptSections);
     let bridge = null;
@@ -144,48 +153,33 @@ export function createAntigravityCascadeClient(options = {}) {
       const cascadeId = String(started?.cascadeId ?? started?.cascade_id ?? "");
       if (!cascadeId) throw new AntigravityCascadeError("Antigravity did not create a Cascade.", { statusCode: 503 });
 
+      const registeredToolNames = new Set(
+        (bridge?.customAgentSpec?.customTools ?? []).map((name) => String(name)),
+      );
       continuation = {
         connection: activeConnection,
         cascadeId,
         bridge,
         model,
+        registeredToolNames,
         pendingCalls: [],
+        turnFloorStepIndex: -1,
+        completedStepIndex: -1,
         resumeAfterStepIndex: -1,
         lastAssistantText: "",
         seenToolEvents: new Set(),
         retained: false,
       };
-      const userItems = normalizeUserItems(request);
-      await serviceCall(activeConnection, "SendUserCascadeMessage", {
+      await sendCascadeTurnMessage(
+        activeConnection,
         cascadeId,
-        items: userItems.filter((item) => item?.text !== undefined),
-        ...(userItems.some((item) => item?.image)
-          ? { media: userItems.filter((item) => item?.image).map((item) => ({
-            inlineData: item.image.data,
-            mimeType: item.image.mimeType,
-          })) }
-          : {}),
-        blocking: false,
-        cascadeConfig: {
-          conversationHistoryConfig: { enabled: false, maxConversations: 0 },
-          plannerConfig: {
-            planModel: model.internalModel,
-            maxMessageTokens,
-            toolConfig: modelOnlyToolConfig(),
-          },
-        },
-      }, { fetchImpl, signal, timeoutMs });
-
+        normalizeUserItems(request),
+        model,
+        maxMessageTokens,
+        { fetchImpl, signal, timeoutMs },
+      );
       yield { type: "ready" };
-
-      yield* observeCascade(continuation, {
-        fetchImpl,
-        signal,
-        timeoutMs,
-        pollIntervalMs: request.pollIntervalMs ?? pollIntervalMs,
-        interactionTimeoutMs: request.interactionTimeoutMs ?? options.interactionTimeoutMs,
-        toolCallTimeoutMs: request.toolCallTimeoutMs ?? options.toolCallTimeoutMs,
-      });
+      yield* observeCascade(continuation, observeTurnOptions(request, signal, timeoutMs));
     } catch (error) {
       if (continuation) await cancel(continuation).catch(() => {});
       else await bridge?.close?.().catch(() => {});
@@ -208,7 +202,7 @@ export function createAntigravityCascadeClient(options = {}) {
 
     try {
       // Releasing a result resumes Cascade immediately; register newly discovered tools first.
-      if (Array.isArray(request.tools)) continuation.bridge.updateTools(request.tools);
+      if (Array.isArray(request.tools)) continuation.bridge?.updateTools?.(request.tools);
       for (const call of expected) {
         const result = resultMap.get(call.callId);
         const completed = continuation.bridge.completeCall(call.callId, result.output, {
@@ -221,14 +215,49 @@ export function createAntigravityCascadeClient(options = {}) {
       continuation.pendingCalls = [];
       continuation.retained = false;
       yield { type: "ready" };
-      yield* observeCascade(continuation, {
-        fetchImpl,
-        signal,
-        timeoutMs,
-        pollIntervalMs: request.pollIntervalMs ?? pollIntervalMs,
-        interactionTimeoutMs: request.interactionTimeoutMs ?? options.interactionTimeoutMs,
-        toolCallTimeoutMs: request.toolCallTimeoutMs ?? options.toolCallTimeoutMs,
-      });
+      yield* observeCascade(continuation, observeTurnOptions(request, signal, timeoutMs));
+    } catch (error) {
+      await cancel(continuation).catch(() => {});
+      throw error;
+    } finally {
+      if (!continuation.retained) await continuation.bridge?.close?.().catch(() => {});
+    }
+  }
+
+  async function* followUp(continuation, request = {}) {
+    validateFollowUpContinuation(continuation, request.tools);
+    const signal = request.signal;
+    throwIfAborted(signal);
+    const timeoutMs = positiveInteger(request.timeoutMs, defaultTimeoutMs);
+    const modelEntries = await listModels({ signal, timeoutMs: request.modelTimeoutMs });
+    const model = resolveModel(modelEntries, request.model || continuation.model?.id);
+    const maxMessageTokens = requirePositiveModelTokenLimit(model.maxTokens, model.id);
+
+    try {
+      if (continuation.bridge && Array.isArray(request.tools)) {
+        continuation.bridge?.updateTools?.(request.tools);
+      }
+      const floorStepIndex = Number.isInteger(continuation.completedStepIndex)
+        ? continuation.completedStepIndex
+        : -1;
+      continuation.model = model;
+      continuation.pendingCalls = [];
+      continuation.turnFloorStepIndex = floorStepIndex;
+      continuation.resumeAfterStepIndex = floorStepIndex;
+      continuation.lastAssistantText = "";
+      continuation.retained = false;
+
+      await sendCascadeTurnMessage(
+        continuation.connection,
+        continuation.cascadeId,
+        normalizeFollowUpUserItems(request),
+        model,
+        maxMessageTokens,
+        { fetchImpl, signal, timeoutMs },
+      );
+
+      yield { type: "ready" };
+      yield* observeCascade(continuation, observeTurnOptions(request, signal, timeoutMs));
     } catch (error) {
       await cancel(continuation).catch(() => {});
       throw error;
@@ -248,7 +277,42 @@ export function createAntigravityCascadeClient(options = {}) {
     }
   }
 
-  return { listModels, getReadiness, start, resume, cancel };
+  function observeTurnOptions(request, signal, timeoutMs) {
+    return {
+      fetchImpl,
+      signal,
+      timeoutMs,
+      pollIntervalMs: request.pollIntervalMs ?? pollIntervalMs,
+      interactionTimeoutMs: request.interactionTimeoutMs ?? options.interactionTimeoutMs,
+      toolCallTimeoutMs: request.toolCallTimeoutMs ?? options.toolCallTimeoutMs,
+      retainConversation: request.retainConversation === true,
+      onTurnCompleted: request.onTurnCompleted,
+    };
+  }
+
+  async function sendCascadeTurnMessage(targetConn, cascadeId, userItems, model, maxMessageTokens, reqOpts) {
+    await serviceCall(targetConn, "SendUserCascadeMessage", {
+      cascadeId,
+      items: userItems.filter((item) => item?.text !== undefined),
+      ...(userItems.some((item) => item?.image)
+        ? { media: userItems.filter((item) => item?.image).map((item) => ({
+          inlineData: item.image.data,
+          mimeType: item.image.mimeType,
+        })) }
+        : {}),
+      blocking: false,
+      cascadeConfig: {
+        conversationHistoryConfig: { enabled: false, maxConversations: 0 },
+        plannerConfig: {
+          planModel: model.internalModel,
+          maxMessageTokens,
+          toolConfig: modelOnlyToolConfig(),
+        },
+      },
+    }, reqOpts);
+  }
+
+  return { listModels, getReadiness, start, resume, followUp, cancel };
 }
 
 function resolvePromptStateRoot(env) {
@@ -298,16 +362,22 @@ async function* observeCascade(continuation, options) {
           name: "TimeoutError",
         });
       }
+      const turnFloorStepIndex = Number.isInteger(continuation.turnFloorStepIndex)
+        ? continuation.turnFloorStepIndex
+        : -1;
       const trajectory = await serviceCall(connection, "GetCascadeTrajectory", { cascadeId }, {
         fetchImpl: options.fetchImpl,
         signal: options.signal,
         timeoutMs: Math.min(options.timeoutMs, 15000),
       });
-      const trajectoryError = extractTrajectoryError(trajectory);
+      const trajectoryError = extractTrajectoryError(trajectory, turnFloorStepIndex);
       if (trajectoryError) throw classifyTrajectoryError(trajectoryError);
 
-      const pending = extractPendingMcpCalls(trajectory, bridge?.tools?.map((tool) => tool.name) ?? [])
-        .filter((call) => !continuation.seenToolEvents?.has(call.trajectoryKey));
+      const pending = extractPendingMcpCalls(
+        trajectory,
+        bridge?.tools?.map((tool) => tool.name) ?? [],
+        turnFloorStepIndex,
+      ).filter((call) => !continuation.seenToolEvents?.has(call.trajectoryKey));
       if (pending.length > 0) {
         if (!bridge) {
           throw new AntigravityCascadeError("Cascade requested a tool without a native MCP bridge.", { statusCode: 502 });
@@ -334,7 +404,7 @@ async function* observeCascade(continuation, options) {
         return true;
       }
 
-      const genericStepIndex = extractPendingGenericToolStepIndex(trajectory);
+      const genericStepIndex = extractPendingGenericToolStepIndex(trajectory, turnFloorStepIndex);
       const queued = genericStepIndex >= 0 ? takeQueuedNativeCalls(bridge) : [];
       if (queued.length > 0) {
         const text = extractNewAssistantText(trajectory, continuation);
@@ -363,16 +433,18 @@ async function* observeCascade(continuation, options) {
           signal: options.signal,
           timeoutMs: Math.min(options.timeoutMs, 15000),
         });
-        const finalError = extractTrajectoryError(finalTrajectory);
+        const finalError = extractTrajectoryError(finalTrajectory, turnFloorStepIndex);
         if (finalError) throw classifyTrajectoryError(finalError);
         const finalPending = extractPendingMcpCalls(
           finalTrajectory,
           bridge?.tools?.map((tool) => tool.name) ?? [],
+          turnFloorStepIndex,
         ).filter((call) => !continuation.seenToolEvents?.has(call.trajectoryKey));
         if (finalPending.length > 0) continue;
         const text = extractNewAssistantText(finalTrajectory, continuation);
         if (text) yield { type: "text_delta", delta: text };
         if (!text
+          && !continuation.lastAssistantText
           && continuation.resumeAfterStepIndex >= 0
           && transientIdleRetries < MAX_TRANSIENT_IDLE_RETRIES) {
           transientIdleRetries += 1;
@@ -381,7 +453,14 @@ async function* observeCascade(continuation, options) {
           startIdleWatch();
           continue;
         }
-        continuation.retained = false;
+        const finalSteps = finalTrajectory?.trajectory?.steps ?? finalTrajectory?.steps ?? [];
+        continuation.completedStepIndex = finalSteps.length - 1;
+        if (options.retainConversation === true) {
+          continuation.retained = true;
+          options.onTurnCompleted?.(continuation);
+        } else {
+          continuation.retained = false;
+        }
         yield { type: "done", result: { cascadeId, model: model.id } };
         return false;
       }
@@ -481,11 +560,12 @@ function approvalFor(requestedInteraction) {
     : { mcp: { confirm: true } };
 }
 
-function extractPendingMcpCalls(payload, allowedNames = []) {
+function extractPendingMcpCalls(payload, allowedNames = [], minimumStepIndex = -1) {
   const allowed = new Set(allowedNames.map(String));
   const steps = payload?.trajectory?.steps ?? payload?.steps ?? [];
   const trajectoryId = String(payload?.trajectory?.trajectoryId ?? payload?.trajectory?.trajectory_id ?? "");
   return steps.flatMap((step, stepArrayIndex) => {
+    if (stepArrayIndex <= minimumStepIndex) return [];
     if (step?.type !== "CORTEX_STEP_TYPE_MCP_TOOL") return [];
     if (step?.status && step.status !== "CORTEX_STEP_STATUS_WAITING") return [];
     const toolCall = step?.mcpTool?.toolCall ?? step?.mcp_tool?.tool_call;
@@ -516,9 +596,9 @@ function extractPendingMcpCalls(payload, allowedNames = []) {
   });
 }
 
-function extractPendingGenericToolStepIndex(payload) {
+function extractPendingGenericToolStepIndex(payload, minimumStepIndex = -1) {
   const steps = payload?.trajectory?.steps ?? payload?.steps ?? [];
-  for (let index = steps.length - 1; index >= 0; index -= 1) {
+  for (let index = steps.length - 1; index > minimumStepIndex; index -= 1) {
     const step = steps[index];
     if (step?.type !== "CORTEX_STEP_TYPE_GENERIC") continue;
     if (step?.status === "CORTEX_STEP_STATUS_DONE") continue;
@@ -556,7 +636,10 @@ export function extractAssistantTextAfter(payload, minimumStepIndex = -1) {
 function extractNewAssistantText(payload, continuation) {
   const afterBoundary = extractAssistantTextAfter(payload, continuation.resumeAfterStepIndex);
   if (afterBoundary) return updateAssistantText(continuation, afterBoundary);
-  const latest = extractAssistantTextAfter(payload, -1);
+  const floorIndex = Number.isInteger(continuation.turnFloorStepIndex)
+    ? continuation.turnFloorStepIndex
+    : -1;
+  const latest = extractAssistantTextAfter(payload, floorIndex);
   return latest ? updateAssistantText(continuation, latest) : "";
 }
 
@@ -571,7 +654,7 @@ function normalizeUserItems(request) {
   const items = Array.isArray(request.userItems) ? request.userItems : [];
   const historyImages = (request.systemSections ?? [])
     .filter((section) => section.kind === "chat_history")
-    .flatMap((section) => section.messages ?? [])
+    .flatMap((section) => section.retainedMessages ?? section.messages ?? [])
     .flatMap((message) => Array.isArray(message.content) ? message.content : [])
     .flatMap((part) => {
       if (part?.type !== "image_url") return [];
@@ -582,9 +665,14 @@ function normalizeUserItems(request) {
   return [...historyImages, ...(items.length ? items : [{ text: requiredText(request.userText, "current user text") }])];
 }
 
-function extractTrajectoryError(payload) {
+function normalizeFollowUpUserItems(request) {
+  const items = Array.isArray(request.userItems) ? request.userItems : [];
+  return items.length ? items : [{ text: requiredText(request.userText, "current user text") }];
+}
+
+function extractTrajectoryError(payload, minimumStepIndex = -1) {
   const steps = payload?.trajectory?.steps ?? payload?.steps ?? [];
-  for (let index = steps.length - 1; index >= 0; index -= 1) {
+  for (let index = steps.length - 1; index > minimumStepIndex; index -= 1) {
     const step = steps[index];
     const details = step?.errorMessage?.error ?? step?.error ?? {};
     const message = [
@@ -609,29 +697,6 @@ function classifyTrajectoryError(message) {
         ? 401
         : 503;
   return new AntigravityCascadeError(message, { statusCode });
-}
-
-function renderSystemPromptSections(sections = []) {
-  return sections.flatMap((section) => {
-    let content = String(section?.content ?? "");
-    if (section?.kind === "chat_history") {
-      content = (section.messages ?? []).map((message) => JSON.stringify(message, (_key, value) => {
-        const dataImage = typeof value === "string"
-          ? /^data:(image\/[a-z0-9.+-]+)(?:;[^,]*)?;base64,/iu.exec(value)
-          : null;
-        return dataImage ? `[historical image attached as media: ${dataImage[1].toLowerCase()}]` : value;
-      })).join("\n");
-    }
-    if (!content) return [];
-    return [{
-      title: String(section?.title ?? "Codex instructions"),
-      content,
-      metadata: {
-        isInternal: true,
-        ...(section?.contentTrust ? { contentTrust: section.contentTrust } : {}),
-      },
-    }];
-  });
 }
 
 function withToolCompatibilitySection(sections, tools) {
@@ -917,6 +982,13 @@ function modelOnlyToolConfig() {
 function validateContinuation(value) {
   if (!value?.connection || !value?.cascadeId || !value?.bridge || !Array.isArray(value?.pendingCalls)) {
     throw new AntigravityCascadeError("Opaque Cascade continuation is incomplete.", { statusCode: 409 });
+  }
+}
+
+function validateFollowUpContinuation(value, tools) {
+  const needsBridge = Array.isArray(tools) && tools.length > 0;
+  if (!value?.connection || !value?.cascadeId || (needsBridge && !value?.bridge)) {
+    throw new AntigravityCascadeError("Opaque Cascade follow-up continuation is incomplete.", { statusCode: 409 });
   }
 }
 

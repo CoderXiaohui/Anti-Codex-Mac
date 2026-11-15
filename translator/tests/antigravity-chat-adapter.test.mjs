@@ -1027,6 +1027,180 @@ test("aborted requests reach the Cascade client and emit no terminal chunk", asy
   await adapter.close();
 });
 
+test("restarts with fresh StartCascade when tool_search dynamically adds mcp__anticodex_web__web_fetch", async () => {
+  const initialContinuation = {
+    cascadeId: "cascade_before_tool_search",
+    registeredToolNames: new Set(["exec_command", "tool_search"]),
+  };
+  let startCall = 0;
+  const client = fakeClient({
+    startEventsFactory(index) {
+      startCall = index;
+      if (index === 1) {
+        return [{
+          type: "tool_calls",
+          continuation: initialContinuation,
+          calls: [{ callId: "call_search_1", name: "tool_search", arguments: { query: "anticodex-web" } }],
+        }];
+      }
+      return [{ type: "text_delta", delta: "fetched web page cleanly" }, { type: "done" }];
+    },
+    resumeEvents: [{ type: "error", error: new Error("must not resume stale tool whitelist") }],
+  });
+  const adapter = createAdapter(client);
+
+  const initialTools = [
+    { type: "function", function: { name: "exec_command", parameters: { type: "object" } } },
+    { type: "function", function: { name: "tool_search", parameters: { type: "object" } } },
+  ];
+  const first = await adapter.complete({
+    model: "gemini-4-carbon-high",
+    messages: [{ role: "user", content: "check this github repo" }],
+    tools: initialTools,
+  });
+  assert.equal(first.choices[0].finish_reason, "tool_calls");
+
+  const upgradedTools = [
+    ...initialTools,
+    { type: "function", function: { name: "mcp__anticodex_web__web_fetch", parameters: { type: "object" } } },
+    { type: "function", function: { name: "mcp__anticodex_web__web_search", parameters: { type: "object" } } },
+  ];
+  const second = await adapter.complete({
+    model: "gemini-4-carbon-high",
+    messages: [
+      { role: "user", content: "check this github repo" },
+      { role: "assistant", content: null, tool_calls: first.choices[0].message.tool_calls },
+      { role: "tool", tool_call_id: "call_search_1", content: '{"tools":["mcp__anticodex_web__web_fetch"]}' },
+    ],
+    tools: upgradedTools,
+  });
+
+  assert.equal(second.choices[0].message.content, "fetched web page cleanly");
+  assert.equal(startCall, 2);
+  assert.equal(client.resumes.length, 0);
+  assert.deepEqual(client.cancels, [initialContinuation]);
+  assert.deepEqual(client.starts[1].tools.map((t) => t.function.name), [
+    "exec_command",
+    "tool_search",
+    "mcp__anticodex_web__web_fetch",
+    "mcp__anticodex_web__web_search",
+  ]);
+  await adapter.close();
+});
+
+test("reuses the same Cascade across same-channel follow-up turns while isolating title helpers and provider switches", async () => {
+  const followUps = [];
+  const cancelled = [];
+  let createdCount = 0;
+  const client = {
+    starts: [],
+    resumes: [],
+    async listModels() {
+      return [{ id: "gemini-4-carbon-high", displayName: "Gemini Carbon" }];
+    },
+    start(request) {
+      this.starts.push(request);
+      createdCount += 1;
+      const cont = {
+        cascadeId: `cascade_conv_${createdCount}`,
+        registeredToolNames: new Set((request.tools ?? []).map((t) => t.function.name)),
+        retained: Boolean(request.retainConversation),
+      };
+      return (async function* () {
+        yield { type: "ready" };
+        const text = request.tools?.length === 0 && request.toolChoice === "none"
+          ? '{"title":"BPS 部署","description":"分析并部署 BPS"}'
+          : `reply_${createdCount}`;
+        yield { type: "text_delta", delta: text };
+        request.onTurnCompleted?.(cont);
+        yield { type: "done" };
+      }());
+    },
+    resume() {
+      return (async function* () { yield { type: "done" }; }());
+    },
+    followUp(continuation, request) {
+      followUps.push({ continuation, request });
+      return (async function* () {
+        yield { type: "ready" };
+        yield { type: "text_delta", delta: "follow_up_reply" };
+        request.onTurnCompleted?.(continuation);
+        yield { type: "done" };
+      }());
+    },
+    async cancel(continuation) {
+      cancelled.push(continuation.cascadeId);
+    },
+  };
+  const adapter = createAdapter(client);
+  const tools = [{ type: "function", function: { name: "exec_command", parameters: { type: "object" } } }];
+  const convOpts = { conversationKey: "thread_same_channel_1" };
+
+  // Turn 1
+  const r1 = await adapter.complete({
+    model: "gemini-4-carbon-high",
+    messages: [{ role: "user", content: "first question" }],
+    tools,
+  }, convOpts);
+  assert.equal(r1.choices[0].message.content, "reply_1");
+  assert.equal(adapter.conversationCount, 1);
+
+  // Background title helper on the same thread must NOT steal or overwrite the conversation
+  await adapter.complete({
+    model: "gemini-4-carbon-high",
+    messages: [{
+      role: "user",
+      content: [
+        "You are a helpful assistant. You will be presented with a user prompt, and your job is to provide a short title for a task that will be created from that prompt.",
+        "Generate a concise UI title (up to 36 characters) for this task.",
+        "Fill the structured title field with plain text.",
+        "Fill the structured description field with a compact, search-oriented summary (up to 100 characters).",
+        "Do NOT respond to the user, answer questions, or attempt to solve the problem; just write a title",
+        "User prompt:",
+        "first question",
+      ].join("\n"),
+    }],
+    tools,
+  }, convOpts);
+  assert.equal(adapter.conversationCount, 1);
+
+  // Turn 2 in same channel (even switching model variant) reuses cascade_conv_1 via followUp!
+  const r2 = await adapter.complete({
+    model: "gemini-4-argon-high",
+    messages: [
+      { role: "user", content: "first question" },
+      { role: "assistant", content: "reply_1" },
+      { role: "user", content: "那个 SIWC 是什么东西" },
+    ],
+    tools,
+  }, convOpts);
+  assert.equal(r2.choices[0].message.content, "follow_up_reply");
+  assert.equal(followUps.length, 1);
+  assert.equal(followUps[0].continuation.cascadeId, "cascade_conv_1");
+  assert.equal(followUps[0].request.model, "gemini-4-argon-high");
+  assert.equal(followUps[0].request.userText, "那个 SIWC 是什么东西");
+
+  // If an intermediate turn happened on a third-party provider (unseen user->assistant turn), safely start fresh
+  const r3 = await adapter.complete({
+    model: "gemini-4-argon-high",
+    messages: [
+      { role: "user", content: "first question" },
+      { role: "assistant", content: "reply_1" },
+      { role: "user", content: "那个 SIWC 是什么东西" },
+      { role: "assistant", content: "follow_up_reply" },
+      { role: "user", content: "question handled by external provider" },
+      { role: "assistant", content: "external provider answer" },
+      { role: "user", content: "back to antigravity" },
+    ],
+    tools,
+  }, convOpts);
+  assert.equal(r3.choices[0].message.content, "reply_3");
+  assert.ok(cancelled.includes("cascade_conv_1"));
+
+  await adapter.close();
+  assert.equal(adapter.conversationCount, 0);
+});
+
 function baseBody(overrides = {}) {
   return {
     model: "gemini-pro-agent",

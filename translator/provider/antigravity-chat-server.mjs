@@ -5,6 +5,7 @@ import { ChatAdapterError, mapAntigravityError } from "./antigravity-chat-adapte
 import {
   MAX_CHAT_BODY_BYTES,
   boundedPositiveInteger,
+  extractConversationKey,
 } from "../antigravity-contract.mjs";
 
 export { MAX_CHAT_BODY_BYTES };
@@ -67,8 +68,12 @@ export async function createAntigravityChatServer(options = {}) {
       }
 
       const body = await readJsonBody(request, maxBodyBytes);
+      const conversationKey = extractConversationKey(request.headers);
+      const adapterOptions = conversationKey
+        ? { signal: controller.signal, conversationKey }
+        : { signal: controller.signal };
       if (body?.stream === true) {
-        iterator = adapter.stream(body, { signal: controller.signal })[Symbol.asyncIterator]();
+        iterator = adapter.stream(body, adapterOptions)[Symbol.asyncIterator]();
         const buffered = [];
         while (true) {
           const item = await iterator.next();
@@ -105,7 +110,7 @@ export async function createAntigravityChatServer(options = {}) {
         return;
       }
 
-      const completion = await adapter.complete(body, { signal: controller.signal });
+      const completion = await adapter.complete(body, adapterOptions);
       finished = true;
       sendJson(response, 200, completion);
     } catch (error) {
