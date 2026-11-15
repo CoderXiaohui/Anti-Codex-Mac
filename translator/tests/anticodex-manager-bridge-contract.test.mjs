@@ -2080,8 +2080,8 @@ test("Manager correlates fresh background reports and keeps their final result v
 });
 
 test("current Manager UI exposes no legacy session-controller action", () => {
-  assert.match(managerInject, /const VERSION = "native-panel-v120"/);
-  assert.match(managerOpenInject, /__ANTICODEX_MANAGER_VERSION__ === "native-panel-v120"/);
+  assert.match(managerInject, /const VERSION = "native-panel-v121"/);
+  assert.match(managerOpenInject, /__ANTICODEX_MANAGER_VERSION__ === "native-panel-v121"/);
   assert.match(managerInject, /\.anticodex-head\{[^}]*position:sticky;top:0;z-index:3;background:var\(--ac-bg\)/);
   for (const [name, text] of Object.entries({
     source,
@@ -2224,4 +2224,15 @@ test("native compatibility style makes closed Radix menu wrappers mouse transpar
     managerInject,
     /\[data-radix-popper-content-wrapper\]:has\(> \[data-radix-menu-content\]\[data-state="closed"\]\)\{pointer-events:none!important\}/,
   );
+});
+
+test("Manager overlay does not close on backdrop clicks and omits the unused external connector auth card", () => {
+  const openManagerBlock = extractNamedFunction(managerInject, "openManager");
+  assert.doesNotMatch(openManagerBlock, /event\.target === root[\s\S]{0,40}removeManager\(\)/);
+  assert.doesNotMatch(openManagerBlock, /card\(["'](?:\\u5916\\u90e8\\u8fde\\u63a5\\u5668\\u6388\\u6743|外部连接器授权)["']/);
+  assert.match(managerInject, /function syncClientModelCatalog\(\)/);
+  assert.match(managerInject, /type:\s*"codex-app-server-restart"/);
+  const upstreamConfigBlock = extractNamedFunction(managerInject, "showUpstreamConfig");
+  assert.match(upstreamConfigBlock, /syncClientModelCatalog\(\)/);
+  assert.match(upstreamConfigBlock, /已拉取该 API 支持的/);
 });

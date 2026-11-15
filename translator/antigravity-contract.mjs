@@ -8,9 +8,18 @@ export function boundedPositiveInteger(value, fallback, maximum) {
   return Math.min(selected, maximum);
 }
 
-export function extractConversationKey(headers) {
-  for (const name of ["thread-id", "session-id", "x-opencode-session"]) {
-    const raw = headers?.[name];
+export function extractConversationKey(headers, body) {
+  const candidates = [
+    headers?.["thread-id"],
+    headers?.["thread_id"],
+    headers?.["session-id"],
+    headers?.["session_id"],
+    headers?.["conversation-id"],
+    headers?.["conversation_id"],
+    headers?.["x-opencode-session"],
+    body?.prompt_cache_key,
+  ];
+  for (const raw of candidates) {
     const value = String(Array.isArray(raw) ? raw[0] : (raw ?? "")).trim();
     if (value && value.length <= 256 && !/[\u0000-\u001f\u007f]/.test(value)) {
       return value;
@@ -346,6 +355,26 @@ export function createSessionStore({ client, maxSessions, ttlMs, setTimer, clear
     return entry;
   }
 
+  function takeMatchingConversation(params) {
+    let bestKey = null;
+    let bestEntry = null;
+    let bestItems = null;
+    for (const [key, entry] of conversations.entries()) {
+      if (!key.startsWith("auto:")) continue;
+      const items = matchFollowUpConversation(entry, params);
+      if (!items) continue;
+      if (!bestEntry || entry.baseSignatures.length >= bestEntry.baseSignatures.length) {
+        bestKey = key;
+        bestEntry = entry;
+        bestItems = items;
+      }
+    }
+    if (!bestEntry) return null;
+    conversations.delete(bestKey);
+    clearTimer(bestEntry.timer);
+    return { entry: bestEntry, followUpItems: bestItems };
+  }
+
   async function putConversation(key, continuation, metadata = {}) {
     const normalized = String(key ?? "").trim();
     if (!normalized || !continuation) return;
@@ -509,6 +538,7 @@ export function createSessionStore({ client, maxSessions, ttlMs, setTimer, clear
     peek,
     cancelRecord: cancel,
     takeConversation,
+    takeMatchingConversation,
     putConversation,
     claim,
     complete,

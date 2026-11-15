@@ -936,6 +936,18 @@ test("Anti-Codex Manager Service API contract and security suite", async (t) => 
       const boundedResponse = await saveProfile({ ...profileBody, capabilities: {}, timeoutMs: 1 });
       assert.equal(boundedResponse.status, 200);
       assert.equal(providerRequests, 3);
+
+      const blankTest = await testProfile({ ...profileBody, model: "", capabilities: {} });
+      assert.equal(blankTest.status, 200);
+      const blankPayload = await blankTest.json();
+      assert.equal(blankPayload.ok, true);
+      assert.equal(blankPayload.resolvedModel, "gpt-local");
+      assert.deepEqual(blankPayload.models, ["gpt-local", "gpt-next"]);
+
+      const saveDiscoveredOther = await saveProfile({ ...profileBody, model: "gpt-next", capabilities: {} });
+      assert.equal(saveDiscoveredOther.status, 200);
+      const savePayload = await saveDiscoveredOther.json();
+      assert.deepEqual(savePayload.providerModels, ["gpt-next", "gpt-local"]);
     } finally {
       await closeServer(providerServer);
       fs.rmSync(fixture.tempDir, { recursive: true, force: true });

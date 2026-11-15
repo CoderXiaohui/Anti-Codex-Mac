@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import {
     buildCodexPlusPlusProbeRequest,
+    selectDefaultCodexPlusPlusModel,
     testCodexPlusPlusUpstreamConnection,
 } from "../translator/provider/codexplusplus-upstream-probe.mjs";
 import { localBackendApiResponse } from "../translator/local-projection/index.mjs";
@@ -1967,6 +1968,15 @@ export function createAntiCodexManagerService(options = {}) {
   const upstreamTestEvidenceSalt = crypto.randomBytes(32);
   let upstreamTestEvidence = null;
   let upstreamTestGeneration = 0;
+  const upstreamEndpointFingerprint = (profile, contextWindow) => {
+    const request = buildCodexPlusPlusProbeRequest(profile);
+    return crypto.createHmac("sha256", upstreamTestEvidenceSalt).update(JSON.stringify([
+      request.protocol,
+      request.url,
+      String(contextWindow ?? "").trim(),
+      request.apiKey,
+    ])).digest("hex");
+  };
   const upstreamTestFingerprint = (profile, contextWindow) => {
     const request = buildCodexPlusPlusProbeRequest(profile);
     return crypto.createHmac("sha256", upstreamTestEvidenceSalt).update(JSON.stringify([
@@ -2336,14 +2346,26 @@ export function createAntiCodexManagerService(options = {}) {
         });
         const ok = stages.length > 0 && stages.every((stage) => stage.status !== "fail");
         const sanitizedStages = sanitizedConnectionStages(stages);
-        if (ok && testGeneration === upstreamTestGeneration) {
+        const discoveredModels = providerModelIdsFromConnectionStages(sanitizedStages, body.model);
+        const resolvedModel = String(body.model || "").trim() || selectDefaultCodexPlusPlusModel(discoveredModels);
+        if (ok && resolvedModel && testGeneration === upstreamTestGeneration) {
+          const resolvedProfile = { ...profile, model: resolvedModel };
           upstreamTestEvidence = {
-            fingerprint: upstreamTestFingerprint(profile, body.contextWindow),
+            fingerprint: upstreamTestFingerprint(resolvedProfile, body.contextWindow),
+            endpointFingerprint: upstreamEndpointFingerprint(resolvedProfile, body.contextWindow),
+            resolvedModel,
+            allowedModels: uniqueModelIds([resolvedModel, ...discoveredModels]),
             stages: sanitizedStages,
             expiresAt: Date.now() + UPSTREAM_TEST_EVIDENCE_TTL_MS,
           };
         }
-        return jsonResponse(res, 200, { ok, stages: sanitizedStages, summary: upstreamConnectionSummary(sanitizedStages) }, req);
+        return jsonResponse(res, 200, {
+          ok,
+          resolvedModel,
+          models: discoveredModels,
+          stages: sanitizedStages,
+          summary: upstreamConnectionSummary(sanitizedStages),
+        }, req);
       } catch (error) {
         return jsonResponse(res, 200, {
           ok: false,
@@ -2373,15 +2395,23 @@ export function createAntiCodexManagerService(options = {}) {
           const savedRuntime = await runUpstreamProfileScript("GetRuntime", {}, stateRoot, scriptsRoot);
           apiKey = String(savedRuntime.apiKey || "");
         }
+        const selectedModel = String(body.model || "").trim() || String(testEvidence?.resolvedModel || "").trim();
         const profile = {
           protocol: body.protocol,
           baseUrl: body.baseUrl,
           apiKey,
-          model: body.model,
+          model: selectedModel,
         };
-        const testEvidenceFresh = testEvidence && testEvidence.expiresAt >= Date.now();
-        const testEvidenceMatches = testEvidenceFresh
-          && testEvidence.fingerprint === upstreamTestFingerprint(profile, body.contextWindow);
+        const testEvidenceFresh = Boolean(testEvidence && testEvidence.expiresAt >= Date.now() && selectedModel);
+        let testEvidenceMatches = false;
+        if (testEvidenceFresh) {
+          testEvidenceMatches = testEvidence.fingerprint === upstreamTestFingerprint(profile, body.contextWindow)
+            || (
+              Array.isArray(testEvidence.allowedModels)
+              && testEvidence.allowedModels.includes(selectedModel)
+              && testEvidence.endpointFingerprint === upstreamEndpointFingerprint(profile, body.contextWindow)
+            );
+        }
         if (!testEvidenceMatches) {
           return jsonResponse(res, 400, { ok: false, message: "请先完成“测试连通”，确认接口可用后再保存。" }, req);
         }
@@ -2389,13 +2419,13 @@ export function createAntiCodexManagerService(options = {}) {
         const testStatus = "success";
         const capabilities = {
           connectionStages: sanitizedConnectionStages(stages),
-          providerModels: providerModelIdsFromConnectionStages(stages, body.model),
+          providerModels: providerModelIdsFromConnectionStages(stages, selectedModel),
         };
         saveSnapshots = captureFileSnapshots(thirdPartySavePaths);
         const savedProfile = await runUpstreamProfileScript("SaveThirdParty", {
           protocol: body.protocol,
           baseUrl: body.baseUrl,
-          model: body.model,
+          model: selectedModel,
           contextWindow: body.contextWindow,
           apiKey,
           testStatus,

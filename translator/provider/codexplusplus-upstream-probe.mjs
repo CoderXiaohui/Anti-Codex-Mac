@@ -1,6 +1,6 @@
 const CHAT_PROTOCOLS = new Set(["openai-compatible", "chat", "chat-completions", "chatcompletions"]);
 
-export function normalizeCodexPlusPlusProbeProfile(value = {}) {
+export function normalizeCodexPlusPlusProbeEndpoint(value = {}) {
   const rawProtocol = String(value.protocol ?? "").trim().toLowerCase();
   const protocol = CHAT_PROTOCOLS.has(rawProtocol)
     ? "chatCompletions"
@@ -23,9 +23,23 @@ export function normalizeCodexPlusPlusProbeProfile(value = {}) {
 
   const model = String(value.model ?? "").trim();
   const apiKey = String(value.apiKey ?? "");
-  if (!model) throw new Error("Provider model is required.");
   if (!apiKey) throw new Error("Provider API key is required.");
   return { protocol, baseUrl, model, apiKey };
+}
+
+export function normalizeCodexPlusPlusProbeProfile(value = {}) {
+  const profile = normalizeCodexPlusPlusProbeEndpoint(value);
+  if (!profile.model) throw new Error("Provider model is required.");
+  return profile;
+}
+
+export function selectDefaultCodexPlusPlusModel(models = []) {
+  const candidates = Array.isArray(models)
+    ? models.map((item) => String(item ?? "").trim()).filter(Boolean)
+    : [];
+  if (candidates.length === 0) return "";
+  const nonTextPattern = /(?:^|[-_/:.])(embedding|embeddings|whisper|tts|moderation|rerank|dall-e|imagen|flux|stable-diffusion|audio|speech|transcribe|realtime)(?:$|[-_/:.])/i;
+  return candidates.find((id) => !nonTextPattern.test(id)) || candidates[0];
 }
 
 export function buildCodexPlusPlusProbeRequest(value = {}) {
@@ -59,14 +73,33 @@ export function buildCodexPlusPlusProbeRequest(value = {}) {
 }
 
 export async function testCodexPlusPlusUpstreamConnection(value = {}, options = {}) {
+  const timeoutMs = positiveInteger(options.timeoutMs, 10_000);
+  const fetchImpl = options.fetchImpl ?? fetch;
+  let prediscoveredModels = null;
+  let effectiveValue = value;
+  if (!String(value?.model ?? "").trim() && options.discoverModels === true) {
+    try {
+      normalizeCodexPlusPlusProbeEndpoint(value);
+    } catch (error) {
+      return [{ stage: "配置验证", status: "fail", detail: String(error?.message ?? error) }];
+    }
+    prediscoveredModels = await discoverCodexPlusPlusUpstreamModels(value, { timeoutMs, fetchImpl });
+    const autoModel = selectDefaultCodexPlusPlusModel(prediscoveredModels);
+    if (!autoModel) {
+      return [{
+        stage: "模型列表",
+        status: "fail",
+        detail: "model_not_found: 未能从 /models 自动拉取到模型列表，请检查接口地址或手动输入一个模型名。",
+      }];
+    }
+    effectiveValue = { ...value, model: autoModel };
+  }
   let request;
   try {
-    request = buildCodexPlusPlusProbeRequest(value);
+    request = buildCodexPlusPlusProbeRequest(effectiveValue);
   } catch (error) {
     return [{ stage: "配置验证", status: "fail", detail: String(error?.message ?? error) }];
   }
-  const timeoutMs = positiveInteger(options.timeoutMs, 10_000);
-  const fetchImpl = options.fetchImpl ?? fetch;
   const stages = [{
     stage: "CodexPlusPlus 路由",
     status: "ok",
@@ -105,7 +138,7 @@ export async function testCodexPlusPlusUpstreamConnection(value = {}, options = 
       detail: `HTTP ${response.status}; ${request.body.model}`,
     });
     if (options.discoverModels === true) {
-      const models = await discoverCodexPlusPlusUpstreamModels(value, {
+      const models = prediscoveredModels ?? await discoverCodexPlusPlusUpstreamModels(effectiveValue, {
         timeoutMs,
         fetchImpl,
       });
@@ -134,7 +167,7 @@ export async function testCodexPlusPlusUpstreamConnection(value = {}, options = 
 export async function discoverCodexPlusPlusUpstreamModels(value = {}, options = {}) {
   let profile;
   try {
-    profile = normalizeCodexPlusPlusProbeProfile(value);
+    profile = normalizeCodexPlusPlusProbeEndpoint(value);
   } catch {
     return [];
   }

@@ -1,5 +1,5 @@
 (() => {
-  const VERSION = "native-panel-v120";
+  const VERSION = "native-panel-v121";
   const SUMMARY_VERSION = "latest-reports-evidence-v5";
   const MANAGER_ID = "anticodex-manager-overlay";
   const LEGACY_BUTTON_ID = "anticodex-manager-button";
@@ -34,6 +34,7 @@
     delete window.__ANTICODEX_MANAGER_STATUS_TIMER__;
   }
   window.__ANTICODEX_MANAGER_VERSION__ = VERSION;
+  scheduleWindowsSandboxBannerRecovery();
   window.__ANTICODEX_MANAGER_SUMMARY_VERSION__ = SUMMARY_VERSION;
   window.__ANTICODEX_MANAGER_INSTALLED__ = true;
 
@@ -126,6 +127,44 @@
     const cancel = accountSwitchObservationCancel;
     accountSwitchObservationCancel = null;
     cancel?.();
+  }
+
+  function retryTransientWindowsSandboxBanner() {
+    try {
+      for (const status of document.querySelectorAll('[role="status"]')) {
+        const text = String(status.textContent || "");
+        if (!text.includes("无法检查 Windows 配置") && !text.includes("Couldn’t check Windows setup") && !text.includes("Couldn't check Windows setup")) {
+          continue;
+        }
+        const retryBtn = [...status.querySelectorAll("button")].find((btn) => {
+          const label = String(btn.textContent || "").trim();
+          return label === "重试" || label === "Try again";
+        });
+        if (retryBtn && !retryBtn.disabled) {
+          retryBtn.click();
+          return true;
+        }
+      }
+    } catch {}
+    return false;
+  }
+
+  function scheduleWindowsSandboxBannerRecovery() {
+    for (const delayMs of [600, 1400, 2600, 4200]) {
+      setTimeout(retryTransientWindowsSandboxBanner, delayMs);
+    }
+  }
+
+  function syncClientModelCatalog() {
+    try {
+      window.electronBridge?.sendMessageFromView?.({
+        type: "codex-app-server-restart",
+        hostId: "local",
+        intent: "restart",
+        killCodexProcess: true,
+      });
+      scheduleWindowsSandboxBannerRecovery();
+    } catch {}
   }
 
   function removeManager() {
@@ -2008,8 +2047,7 @@
       if (event.button === 0) closeFromRootHit(event);
     }, true);
     root.addEventListener("click", (event) => {
-      if (closeFromRootHit(event)) return;
-      if (event.target === root) removeManager();
+      closeFromRootHit(event);
     }, true);
     document.body.append(root);
     installManagerThemeSync(root);
@@ -2029,7 +2067,7 @@
         await ensureSnapshotForLoad();
         reconcileManagerPendingActions(window.__ANTICODEX_MANAGER_SNAPSHOT__);
         const snapshotReadOptions = { preferSnapshot: true };
-        const [bootstrapResult, healthResult, modelsResult, diagnosticsResult, pluginsResult, connectorsResult, appToolsResult, allowlistResult, authResult, upstreamResult, routesResult] = await Promise.all([
+        const [bootstrapResult, healthResult, modelsResult, diagnosticsResult, pluginsResult, connectorsResult, appToolsResult, allowlistResult, upstreamResult, routesResult] = await Promise.all([
           safeJson("/anticodex/manager/bootstrap", snapshotReadOptions),
           safeJson("/health", snapshotReadOptions),
           safeJson("/models", snapshotReadOptions),
@@ -2038,7 +2076,6 @@
           safeJson("/backend-api/aip/connectors", snapshotReadOptions),
           safeJson("/backend-api/wham/apps", snapshotReadOptions),
           safeJson("/anticodex/local-connectors/allowlist", snapshotReadOptions),
-          safeJson("/anticodex/connectors/auth", snapshotReadOptions),
           safeJson("/anticodex/upstream-profile", snapshotReadOptions),
           safeJson("/anticodex/model-routes", snapshotReadOptions),
         ]);
@@ -2051,7 +2088,6 @@
         const connectors = safeValue(connectorsResult, { connectors: [] });
         const appTools = safeValue(appToolsResult, { tools: [] });
         const allowlist = safeValue(allowlistResult, { persisted: [], env: [], counts: {} });
-        const auth = safeValue(authResult, { connectors: [] });
         const upstreamProfile = safeValue(upstreamResult, {});
         const routes = safeValue(routesResult, {});
         const usingThirdParty = upstreamProfile.active === "third-party";
@@ -2063,7 +2099,6 @@
           [pluginsResult, "\u63d2\u4ef6"],
           [connectorsResult, "\u8fde\u63a5\u5668"],
           [allowlistResult, "\u672c\u5730\u8fde\u63a5\u5668\u5de5\u5177"],
-          [authResult, "\u8fde\u63a5\u5668\u6388\u6743"],
           [upstreamResult, "\u6a21\u578b\u901a\u9053"],
           [routesResult, "\u6700\u8fd1\u8def\u7531"],
         ].filter(([item]) => !item.ok).map(([item, label]) => {
@@ -2175,7 +2210,6 @@
             optionalLoadErrors.length ? ["\u8865\u5145\u63d0\u793a", optionalLoadErrors.join("\n")] : null,
           ].filter(Boolean))),
           card("\u672c\u5730\u8fde\u63a5\u5668\u5de5\u5177", connectorAllowlistEditor(allowlist, result, load, runManagerExclusive)),
-          card("\u5916\u90e8\u8fde\u63a5\u5668\u6388\u6743", connectorAuthEditor(auth, result, load, runManagerExclusive)),
         ].filter(Boolean);
         grid.replaceChildren(...cards);
         result.classList.toggle("anticodex-error", loadErrors.length > 0);
@@ -2564,6 +2598,8 @@
       const saved = profilePayload.saved || {};
       let lastStages = [];
       let testedFingerprint = "";
+      let testedModelValue = "";
+      let discoveredModels = [];
       let upstreamConfigOperationInFlight = false;
       const fieldStyle = "width:100%;min-height:34px;border:1px solid var(--ac-line);border-radius:8px;background:var(--ac-raised);color:var(--ac-text);padding:7px 9px;font:12px/1.4 'Segoe UI','Microsoft YaHei',sans-serif";
       const row = (label, node) => el("label", { style: "display:grid;gap:5px;color:var(--ac-muted);font-size:12px" }, [
@@ -2577,9 +2613,13 @@
       protocol.value = saved.protocol || "openai-compatible";
       const baseUrl = el("input", { style: fieldStyle, value: saved.baseUrl || "", placeholder: "https://api.example.com/v1 或完整 /v1/chat/completions / /v1/responses 地址" });
       const providerModelListId = `anticodex-provider-models-${Date.now()}`;
-      const model = el("input", { style: fieldStyle, value: saved.model || "", list: providerModelListId, placeholder: "模型名，例如 gpt-4o-mini" });
+      const model = el("input", { style: fieldStyle, value: saved.model || "", list: providerModelListId, placeholder: "可留空（点“测试连通”自动拉取全部模型），也可手动填写" });
       const providerModelList = el("datalist", { id: providerModelListId });
-      const updateProviderModelList = (values = []) => {
+      const discoveredBox = el("div", { style: "display:none;gap:6px;padding:8px 10px;border:1px solid var(--ac-line);border-radius:8px;background:var(--ac-raised);font-size:12px;color:var(--ac-muted)" });
+      const discoveredSummary = el("div", { style: "font-weight:600;color:var(--ac-text)" });
+      const discoveredSelect = el("select", { style: fieldStyle });
+      discoveredBox.append(discoveredSummary, discoveredSelect);
+      const updateProviderModelList = (values = [], selectedValue = "") => {
         const models = [];
         const seen = new Set();
         for (const value of values) {
@@ -2588,35 +2628,54 @@
           seen.add(id);
           models.push(id);
         }
+        discoveredModels = models;
         providerModelList.replaceChildren(...models.map((id) => el("option", { value: id })));
+        if (models.length > 0) {
+          discoveredBox.style.display = "grid";
+          discoveredSummary.textContent = `已拉取该 API 支持的 ${models.length} 个模型（保存后全部加入聊天框模型菜单，可随时自由切换；下方可选默认测试模型）：`;
+          discoveredSelect.replaceChildren(...models.map((id) => el("option", { value: id, text: id })));
+          const chosen = selectedValue && models.includes(selectedValue) ? selectedValue : (models.includes(model.value.trim()) ? model.value.trim() : models[0]);
+          discoveredSelect.value = chosen;
+        } else {
+          discoveredBox.style.display = "none";
+          discoveredSelect.replaceChildren();
+        }
       };
-      updateProviderModelList(saved.capabilities?.providerModels || []);
+      updateProviderModelList(saved.capabilities?.providerModels || [], saved.model || "");
       const contextWindow = el("input", { style: fieldStyle, type: "number", min: "16000", max: "4000000", step: "1000", value: String(saved.contextWindow || 272000), placeholder: "272000" });
       const apiKey = el("input", { style: fieldStyle, type: "password", placeholder: saved.keyConfigured ? `已保存 · ${saved.keyHint}，留空沿用旧 key` : "请输入 API key" });
-      const stageBox = el("pre", { className: "anticodex-result", "aria-live": "polite", text: "“测试连通”会发送一次最小真实请求；测试成功后，“保存配置”复用这次结果，不会再次请求，也不会切换当前会话。" });
-      const saveHint = el("div", { className: "anticodex-form-hint", text: "先测试连通；成功后可保存。" });
+      const stageBox = el("pre", { className: "anticodex-result", "aria-live": "polite", text: "“测试连通”会自动拉取该 API 支持的全部模型并发送一次最小真实请求；测试成功后，“保存配置”复用这次结果，不会再次请求，并把全部模型同步到聊天窗口。" });
+      const saveHint = el("div", { className: "anticodex-form-hint", text: "先测试连通（模型名可留空自动拉取全部模型）；成功后可保存。" });
       const testButton = el("button", { type: "button", text: "测试连通" });
       const saveButton = el("button", { type: "button", text: "保存配置" });
       saveButton.disabled = true;
-      const upstreamConfigFields = [protocol, baseUrl, model, contextWindow, apiKey];
+      const upstreamConfigFields = [protocol, baseUrl, model, discoveredSelect, contextWindow, apiKey];
       function upstreamConfigFingerprint() {
         return JSON.stringify([
           protocol.value,
           baseUrl.value.trim(),
-          model.value.trim(),
           contextWindow.value,
           apiKey.value,
         ]);
       }
+      function isTestedModelAllowed() {
+        const currentModel = model.value.trim();
+        if (!currentModel) return Boolean(testedModelValue);
+        return currentModel === testedModelValue || discoveredModels.includes(currentModel);
+      }
       const refreshUpstreamConfigControls = () => {
         for (const field of upstreamConfigFields) field.disabled = upstreamConfigOperationInFlight;
         testButton.disabled = upstreamConfigOperationInFlight;
-        const fingerprintMatches = Boolean(testedFingerprint) && testedFingerprint === upstreamConfigFingerprint();
+        const fingerprintMatches = Boolean(testedFingerprint) && testedFingerprint === upstreamConfigFingerprint() && isTestedModelAllowed();
         saveButton.disabled = upstreamConfigOperationInFlight || !fingerprintMatches;
         saveHint.textContent = upstreamConfigOperationInFlight
           ? "正在处理，请稍候…"
-          : (fingerprintMatches ? "连接已通过，现在可保存。" : "先测试连通；成功后可保存。");
-        saveButton.title = fingerprintMatches ? "保存当前配置" : "请先点击“测试连通”";
+          : (fingerprintMatches
+            ? (discoveredModels.length > 0
+              ? `连接已通过（共发现 ${discoveredModels.length} 个模型），点击“保存配置”即可全部启用。`
+              : "连接已通过，现在可保存。")
+            : "先测试连通（模型名可留空自动拉取全部模型）；成功后可保存。");
+        saveButton.title = fingerprintMatches ? "保存当前配置并同步全部模型" : "请先点击“测试连通”";
       };
       const setUpstreamConfigBusy = (busy) => {
         upstreamConfigOperationInFlight = Boolean(busy);
@@ -2628,6 +2687,7 @@
       const invalidateConnectionTest = () => {
         lastStages = [];
         testedFingerprint = "";
+        testedModelValue = "";
         stageBox.classList.remove("anticodex-error");
         stageBox.textContent = "配置已修改，请重新测试；测试会发送一次最小真实请求。";
         refreshUpstreamConfigControls();
@@ -2637,10 +2697,28 @@
         invalidateConnectionTest();
       };
       fillDefault();
-      for (const field of [baseUrl, model, contextWindow, apiKey]) {
+      for (const field of [baseUrl, contextWindow, apiKey]) {
         field.addEventListener("input", invalidateConnectionTest);
         field.addEventListener("change", invalidateConnectionTest);
       }
+      const onModelEdited = () => {
+        const currentModel = model.value.trim();
+        if (discoveredModels.includes(currentModel)) {
+          discoveredSelect.value = currentModel;
+        } else if (testedFingerprint && !isTestedModelAllowed()) {
+          invalidateConnectionTest();
+          return;
+        }
+        refreshUpstreamConfigControls();
+      };
+      model.addEventListener("input", onModelEdited);
+      model.addEventListener("change", onModelEdited);
+      discoveredSelect.onchange = () => {
+        if (discoveredSelect.value) {
+          model.value = discoveredSelect.value;
+          refreshUpstreamConfigControls();
+        }
+      };
       const upstreamConnectionSummaryText = (payload) => {
         const summary = payload?.summary;
         if (!summary?.title && !summary?.suggestedAction) return "";
@@ -2659,28 +2737,39 @@
       testButton.onclick = () => runManagerExclusive(async () => {
         if (upstreamConfigOperationInFlight) return;
         const requestFingerprint = upstreamConfigFingerprint();
+        const requestModel = model.value.trim();
         setUpstreamConfigBusy(true);
-        stageBox.textContent = "正在测试连通...";
+        stageBox.textContent = "正在拉取模型列表并测试连通...";
         try {
-          const payload = await managerPostJson("/anticodex/upstream-test", { protocol: protocol.value, baseUrl: baseUrl.value.trim(), model: model.value.trim(), contextWindow: Number(contextWindow.value), apiKey: apiKey.value }, {
+          const payload = await managerPostJson("/anticodex/upstream-test", { protocol: protocol.value, baseUrl: baseUrl.value.trim(), model: requestModel, contextWindow: Number(contextWindow.value), apiKey: apiKey.value }, {
             timeoutMs: UPSTREAM_TEST_TIMEOUT_MS,
             retryCandidates: false,
           });
-          if (requestFingerprint !== upstreamConfigFingerprint()) {
+          if (requestFingerprint !== upstreamConfigFingerprint() || model.value.trim() !== requestModel) {
             lastStages = [];
             testedFingerprint = "";
+            testedModelValue = "";
             stageBox.classList.add("anticodex-error");
             stageBox.textContent = "测试完成，但配置内容已经变化。请重新测试后再保存。";
           } else {
             lastStages = payload.stages || [];
+            const pulledModels = Array.isArray(payload.models) && payload.models.length > 0
+              ? payload.models
+              : lastStages.flatMap((stage) => Array.isArray(stage.models) ? stage.models : []);
+            const resolvedModel = String(payload.resolvedModel || requestModel || pulledModels[0] || "").trim();
+            if (payload.ok === true && resolvedModel && !model.value.trim()) {
+              model.value = resolvedModel;
+            }
             testedFingerprint = payload.ok === true ? requestFingerprint : "";
-            updateProviderModelList(lastStages.flatMap((stage) => Array.isArray(stage.models) ? stage.models : []));
+            testedModelValue = payload.ok === true ? (model.value.trim() || resolvedModel) : "";
+            updateProviderModelList(pulledModels, model.value.trim() || resolvedModel);
             stageBox.textContent = stageText(payload);
             stageBox.classList.toggle("anticodex-error", payload.ok === false);
           }
         } catch (error) {
           lastStages = [];
           testedFingerprint = "";
+          testedModelValue = "";
           stageBox.classList.add("anticodex-error");
           stageBox.textContent = "测试失败：" + error.message;
         } finally {
@@ -2688,20 +2777,24 @@
         }
       });
       saveButton.onclick = () => runManagerExclusive(async () => {
-        if (upstreamConfigOperationInFlight || testedFingerprint !== upstreamConfigFingerprint()) {
+        if (upstreamConfigOperationInFlight || testedFingerprint !== upstreamConfigFingerprint() || !isTestedModelAllowed()) {
           invalidateConnectionTest();
           return;
         }
+        const effectiveModel = model.value.trim() || testedModelValue;
         setUpstreamConfigBusy(true);
-        stageBox.textContent = "正在保存配置...";
+        stageBox.textContent = "正在保存配置并同步全部模型...";
         try {
-          const payload = await managerPostJson("/anticodex/upstream-profile", { protocol: protocol.value, baseUrl: baseUrl.value.trim(), model: model.value.trim(), contextWindow: Number(contextWindow.value), apiKey: apiKey.value }, {
+          const payload = await managerPostJson("/anticodex/upstream-profile", { protocol: protocol.value, baseUrl: baseUrl.value.trim(), model: effectiveModel, contextWindow: Number(contextWindow.value), apiKey: apiKey.value }, {
             timeoutMs: UPSTREAM_TEST_TIMEOUT_MS,
             retryCandidates: false,
           });
+          const savedCount = Array.isArray(payload.providerModels) ? payload.providerModels.length : discoveredModels.length;
           stageBox.classList.remove("anticodex-error");
-          stageBox.textContent = payload.message || "配置已保存，可在聊天输入框的模型菜单选择第三方模型。";
+          stageBox.textContent = (payload.message || "配置已保存，可在聊天输入框的模型菜单选择第三方模型。")
+            + (savedCount > 0 ? `（共已同步 ${savedCount} 个第三方模型，可直接自由切换）` : "");
           window.__ANTICODEX_MANAGER_SNAPSHOT__ = null;
+          syncClientModelCatalog();
         } catch (error) {
           stageBox.classList.add("anticodex-error");
           stageBox.textContent = "保存失败：" + error.message;
@@ -2714,8 +2807,9 @@
       result.replaceChildren(el("div", { style: "display:grid;gap:10px" }, [
         row("协议", protocol),
         row("接口地址（可填 base URL 或完整接口）", baseUrl),
-        row("模型名", model),
+        row("模型名（留空自动拉取全部模型）", model),
         providerModelList,
+        discoveredBox,
         row("上下文窗口（token）", contextWindow),
         row("API key", apiKey),
         el("div", { className: "anticodex-form-actions" }, [testButton, saveButton]),
@@ -2837,6 +2931,9 @@
                 reconcileManagerPendingActions(outcome.payload?.snapshot);
               }
               if (window.__ANTICODEX_MANAGER_CURRENT_ACTION_TOKEN__ !== actionToken) return;
+              if (action === "refreshModels" && outcome.payload?.ok !== false) {
+                syncClientModelCatalog();
+              }
               if (action === "accountSwitch") {
                 result.textContent = "Antigravity \u5df2\u6253\u5f00\uff0c\u6b63\u5728\u81ea\u52a8\u68c0\u6d4b\u8d26\u53f7\u6216\u6a21\u578b\u53d8\u5316\u2026";
                 const change = await waitForAccountSwitch(accountSwitchBaseline);
@@ -2846,6 +2943,7 @@
                 } else if (change.changed) {
                   result.textContent = "\u5df2\u68c0\u6d4b\u5230\u5207\u6362\uff0c\u6b63\u5728\u81ea\u52a8\u5237\u65b0 Anti-Codex \u6a21\u578b\u2026";
                   const refreshPayload = await runActionViaBridge("refreshModels", actionToken);
+                  if (refreshPayload?.ok !== false) syncClientModelCatalog();
                   if (window.__ANTICODEX_MANAGER_CURRENT_ACTION_TOKEN__ !== actionToken) return;
                   result.textContent = "\u8d26\u53f7\u6216\u6a21\u578b\u53d8\u5316\u5df2\u786e\u8ba4\u3002\n" + summaryText("refreshModels", refreshPayload);
                 } else {

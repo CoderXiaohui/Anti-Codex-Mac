@@ -68,7 +68,7 @@ export async function createAntigravityChatServer(options = {}) {
       }
 
       const body = await readJsonBody(request, maxBodyBytes);
-      const conversationKey = extractConversationKey(request.headers);
+      const conversationKey = extractConversationKey(request.headers, body);
       const adapterOptions = conversationKey
         ? { signal: controller.signal, conversationKey }
         : { signal: controller.signal };

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import {
   DEFAULT_TOOL_CONTINUATION_TIMEOUT_MS,
   createSessionStore,
+  extractConversationKey,
   isNativeCodexTaskSuggestionsRequest,
   isNativeCodexTitleRequest,
   hasUnregisteredTools,
@@ -88,8 +89,9 @@ export function createAntigravityChatAdapter(options = {}) {
   }
 
   async function* stream(body, requestOptions = {}) {
-    const requestedConversationKey = typeof client.followUp === "function"
-      ? String(requestOptions.conversationKey ?? "").trim()
+    const canFollowUp = typeof client.followUp === "function";
+    const requestedConversationKey = canFollowUp
+      ? String(requestOptions.conversationKey || extractConversationKey(null, body) || `auto:${randomUUID()}`).trim()
       : "";
     const prepared = prepareChatRequest(
       body,
@@ -484,29 +486,53 @@ function prepareChatRequest(body, sessions, nativeCustomInstructions, conversati
   let staleContinuation = null;
 
   if (effectiveConversationKey) {
-    const existingConversation = sessions.takeConversation(effectiveConversationKey);
-    if (existingConversation) {
-      const followUpItems = matchFollowUpConversation(existingConversation, {
+    const isAutoKey = effectiveConversationKey.startsWith("auto:");
+    if (isAutoKey) {
+      const matched = sessions.takeMatchingConversation?.({
         tools,
         history,
         userItems: userContent.items,
         structuredOutput,
       });
-      if (followUpItems) {
+      if (matched) {
         return {
           kind: "follow_up",
           model,
-          continuation: existingConversation.continuation,
-          registeredToolNames: existingConversation.registeredToolNames,
-          hasToolBridge: existingConversation.hasToolBridge,
-          conversationKey: effectiveConversationKey,
+          continuation: matched.entry.continuation,
+          registeredToolNames: matched.entry.registeredToolNames,
+          hasToolBridge: matched.entry.hasToolBridge,
+          conversationKey: matched.entry.key,
           baseSignatures: nextBaseSignatures,
           userText,
-          userItems: followUpItems,
+          userItems: matched.followUpItems,
           tools,
         };
       }
-      staleContinuation = existingConversation.continuation;
+    } else {
+      const existingConversation = sessions.takeConversation(effectiveConversationKey);
+      if (existingConversation) {
+        const followUpItems = matchFollowUpConversation(existingConversation, {
+          tools,
+          history,
+          userItems: userContent.items,
+          structuredOutput,
+        });
+        if (followUpItems) {
+          return {
+            kind: "follow_up",
+            model,
+            continuation: existingConversation.continuation,
+            registeredToolNames: existingConversation.registeredToolNames,
+            hasToolBridge: existingConversation.hasToolBridge,
+            conversationKey: effectiveConversationKey,
+            baseSignatures: nextBaseSignatures,
+            userText,
+            userItems: followUpItems,
+            tools,
+          };
+        }
+        staleContinuation = existingConversation.continuation;
+      }
     }
   }
 

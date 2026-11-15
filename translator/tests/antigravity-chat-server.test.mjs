@@ -575,6 +575,73 @@ test("forwards thread-id session headers so same-channel turns reuse one Cascade
   }
 });
 
+test("reuses one Cascade conversation via prompt_cache_key when CodexPlusPlus strips underscore headers", async () => {
+  const followUps = [];
+  const client = {
+    starts: 0,
+    async listModels() {
+      return [{ id: "gemini-pro-agent", displayName: "Gemini Pro" }];
+    },
+    start(request) {
+      this.starts += 1;
+      const continuation = { cascadeId: "csc_cache_key_1", port: 62000 };
+      return (async function* () {
+        yield { type: "ready" };
+        yield { type: "text_delta", delta: "turn one" };
+        request.onTurnCompleted?.(continuation);
+        yield { type: "done" };
+      }());
+    },
+    resume() {
+      return (async function* () { yield { type: "done" }; }());
+    },
+    followUp(continuation, request) {
+      followUps.push({ continuation, request });
+      return (async function* () {
+        yield { type: "ready" };
+        yield { type: "text_delta", delta: "turn two" };
+        request.onTurnCompleted?.(continuation);
+        yield { type: "done" };
+      }());
+    },
+    async cancel() {},
+  };
+  const server = await createAntigravityChatServer({ adapter: adapterFor(client) });
+  try {
+    const r1 = await authorizedFetch(server, "/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gemini-pro-agent",
+        prompt_cache_key: "01a1e08f-b4bb-7892-9d1a-999999999999",
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    });
+    assert.equal(r1.status, 200);
+    await r1.json();
+
+    const r2 = await authorizedFetch(server, "/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gemini-pro-agent",
+        prompt_cache_key: "01a1e08f-b4bb-7892-9d1a-999999999999",
+        messages: [
+          { role: "user", content: "hello" },
+          { role: "assistant", content: "turn one" },
+          { role: "user", content: "continue in same thread" },
+        ],
+      }),
+    });
+    assert.equal(r2.status, 200);
+    assert.equal((await r2.json()).choices[0].message.content, "turn two");
+    assert.equal(client.starts, 1);
+    assert.equal(followUps.length, 1);
+  } finally {
+    await server.close();
+  }
+});
+
 function adapterFor(client) {
   let id = 0;
   return createAntigravityChatAdapter({

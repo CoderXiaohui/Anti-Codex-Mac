@@ -144,3 +144,34 @@ test("connection probe can attach discovered provider models", async () => {
   ]);
   assert.deepEqual(stages.at(-1).models, ["selected-model", "next-model"]);
 });
+
+test("connection probe auto-discovers models and selects a default text model when model is blank", async () => {
+  const calls = [];
+  const stages = await testCodexPlusPlusUpstreamConnection({
+    protocol: "openai-compatible",
+    baseUrl: "http://127.0.0.1:8082/v1",
+    model: "",
+    apiKey: "AUTO_DISCOVER_SECRET",
+  }, {
+    discoverModels: true,
+    fetchImpl: async (url, init) => {
+      calls.push({ url, body: init?.body ? JSON.parse(init.body) : null });
+      if (url.endsWith("/models")) {
+        return new Response(JSON.stringify({
+          data: [
+            { id: "text-embedding-3-small" },
+            { id: "gpt-6-astra" },
+            { id: "gpt-6.1-sol" },
+          ],
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content: "OK" } }] }), { status: 200 });
+    },
+  });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].url, "http://127.0.0.1:8082/v1/models");
+  assert.equal(calls[1].url, "http://127.0.0.1:8082/v1/chat/completions");
+  assert.equal(calls[1].body.model, "gpt-6-astra");
+  assert.equal(stages.every((stage) => stage.status !== "fail"), true);
+  assert.deepEqual(stages.at(-1).models, ["text-embedding-3-small", "gpt-6-astra", "gpt-6.1-sol"]);
+});
