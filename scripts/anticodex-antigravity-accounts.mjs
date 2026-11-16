@@ -431,11 +431,26 @@ export function createAntigravityAccountManager(options = {}) {
       if (targets.length === 0) throw new Error("No Antigravity accounts are managed.");
 
       if (!all && targets[0].id === original.activeId) {
-        const quota = quotaSnapshot(await driver.quota());
-        const captured = validateCapture(await driver.capture());
-        if (captured.id !== targets[0].id) throw new Error("Antigravity active account identity mismatch.");
+        const desktopId = String(await driver.desktopIdentity() || "").toLowerCase();
+        const matchingAccount = original.accounts.find((account) => account.id === desktopId);
+        if (!matchingAccount) {
+          throw new Error("The current Antigravity account is not managed; capture it before refreshing.");
+        }
+        const observed = await captureWithQuotaFallback(driver);
+        const captured = observed.captured;
+        if (captured.id !== desktopId) {
+          throw new Error("Antigravity Desktop identity does not match the captured account.");
+        }
+        const quota = observed.quota ?? quotaSnapshot(await driver.quota());
+        const confirmedCapture = validateCapture(await driver.capture());
+        const confirmedDesktopId = String(await driver.desktopIdentity() || "").toLowerCase();
+        if (confirmedCapture.id !== captured.id
+          || confirmedDesktopId !== desktopId) {
+          throw new Error("Antigravity account identity changed during quota refresh.");
+        }
         const state = clone(original);
-        upsertAccount(state, captured, quota, targets[0].label);
+        upsertAccount(state, confirmedCapture, quota, matchingAccount.label);
+        state.activeId = confirmedCapture.id;
         await save(state);
         reportProgress(onProgress, "账号额度已刷新。");
         return publicState(state);

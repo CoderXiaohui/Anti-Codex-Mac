@@ -654,6 +654,75 @@ test("activation reports only fixed safe progress messages", async (t) => {
   assert.doesNotMatch(messages.join("\n"), /progress@example|sha256|dpapi/i);
 });
 
+test("refresh reconciles a stale saved active id to the already signed-in managed identity without switching credentials", async (t) => {
+  const stateRoot = await fixture(t);
+  const staleActive = { capture: account("stale@example.com", "stale"), quota: rawQuota("Stale", 0.3), label: "Old active" };
+  const current = { capture: account("current@example.com", "current-old"), quota: rawQuota("Current", 0.7), label: "Signed-in account" };
+  const currentLatest = { ...current, capture: account("current@example.com", "current-latest"), quota: rawQuota("Current", 0.9) };
+  const other = { capture: account("other@example.com", "other"), quota: rawQuota("Other", 0.4), label: "Other saved account" };
+  await seedState(stateRoot, [staleActive, current, other], staleActive.capture.id);
+  const driver = makeDriver([staleActive, current, other], current.capture.id);
+  let captures = 0;
+  driver.capture = async () => {
+    driver.calls.push(`capture:${driver.currentId}`);
+    captures += 1;
+    return clone(captures === 1 ? current.capture : currentLatest.capture);
+  };
+  const manager = createAntigravityAccountManager({ stateRoot, driver });
+
+  const result = await manager.refresh({ id: staleActive.capture.id, acknowledgeRestart: false });
+
+  assert.equal(result.activeId, current.capture.id);
+  assert.equal(result.accounts.find((entry) => entry.id === current.capture.id).quota.groups[0].buckets[0].remaining_fraction, 0.7);
+  assert.equal(driver.currentId, current.capture.id);
+  assert.equal(driver.calls.some((call) => call.startsWith("restore:") || call.startsWith("begin:") || call === "open"), false);
+  const saved = JSON.parse(await readFile(join(stateRoot, "antigravity-accounts.json"), "utf8"));
+  assert.equal(saved.activeId, current.capture.id);
+  assert.equal(saved.accounts.find((entry) => entry.id === staleActive.capture.id).sealed, staleActive.capture.sealed);
+  assert.equal(saved.accounts.find((entry) => entry.id === other.capture.id).sealed, other.capture.sealed);
+  assert.equal(saved.accounts.find((entry) => entry.id === current.capture.id).sealed, currentLatest.capture.sealed);
+  assertNoSecrets(result);
+});
+
+test("refresh rejects an unknown signed-in identity without saving or switching credentials", async (t) => {
+  const stateRoot = await fixture(t);
+  const active = { capture: account("active-known@example.com", "active-known"), quota: rawQuota("Active", 0.3), label: "Known active" };
+  const other = { capture: account("other-known@example.com", "other-known"), quota: rawQuota("Other", 0.4), label: "Other saved account" };
+  const unknown = { capture: account("unknown-live@example.com", "unknown-live"), quota: rawQuota("Unknown", 0.9), label: "Unmanaged live account" };
+  await seedState(stateRoot, [active, other], active.capture.id);
+  const before = await readFile(join(stateRoot, "antigravity-accounts.json"), "utf8");
+  const driver = makeDriver([active, other], unknown.capture.id);
+  driver.capture = async () => {
+    driver.calls.push(`capture:${driver.currentId}`);
+    return clone(unknown.capture);
+  };
+  const manager = createAntigravityAccountManager({ stateRoot, driver });
+
+  await assert.rejects(manager.refresh({ id: active.capture.id, acknowledgeRestart: false }), /not managed.*capture it/i);
+
+  assert.equal(await readFile(join(stateRoot, "antigravity-accounts.json"), "utf8"), before);
+  assert.equal(driver.calls.some((call) => call.startsWith("quota:") || call.startsWith("restore:") || call.startsWith("begin:") || call === "open"), false);
+});
+
+test("refresh rejects conflicting captured and Desktop identities without saving or switching credentials", async (t) => {
+  const stateRoot = await fixture(t);
+  const active = { capture: account("active-conflict@example.com", "active-conflict"), quota: rawQuota("Active", 0.3), label: "Stored active" };
+  const current = { capture: account("current-conflict@example.com", "current-conflict"), quota: rawQuota("Current", 0.8), label: "Current capture" };
+  await seedState(stateRoot, [active, current], active.capture.id);
+  const before = await readFile(join(stateRoot, "antigravity-accounts.json"), "utf8");
+  const driver = makeDriver([active, current], current.capture.id);
+  driver.desktopIdentity = async () => {
+    driver.calls.push(`desktop:${active.capture.id}`);
+    return active.capture.id;
+  };
+  const manager = createAntigravityAccountManager({ stateRoot, driver });
+
+  await assert.rejects(manager.refresh({ id: active.capture.id, acknowledgeRestart: false }), /Desktop identity.*does not match/i);
+
+  assert.equal(await readFile(join(stateRoot, "antigravity-accounts.json"), "utf8"), before);
+  assert.equal(driver.calls.some((call) => call.startsWith("quota:") || call.startsWith("restore:") || call.startsWith("begin:") || call === "open"), false);
+});
+
 test("refreshing an inactive account uses one restart boundary and restores the latest active credential", async (t) => {
   const stateRoot = await fixture(t);
   const activeStored = { capture: account("active@example.com", "active-old"), quota: rawQuota("Active", 0.4), label: "Active" };
