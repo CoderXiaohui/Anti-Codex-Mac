@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export const MAX_CHAT_BODY_BYTES = 128 * 1024 * 1024;
 export const MAX_NATIVE_MCP_BODY_BYTES = 8 * 1024 * 1024;
 export const DEFAULT_TOOL_CONTINUATION_TIMEOUT_MS = 15 * 60 * 1000;
@@ -652,4 +654,186 @@ export function isNativeCodexTaskSuggestionsRequest(userText, structuredOutput) 
     && Number(suggestions?.maxItems) === 3
     && itemProperties && typeof itemProperties === "object"
     && ["title", "description", "prompt", "appId"].every((name) => Object.hasOwn(itemProperties, name));
+}
+
+// Bounded diagnostic data only; task execution stays in the native host.
+export function createCascadeTraceStore(now = Date.now) {
+  const cascadeTraces = new Map();
+  function recordCascadeTrace({ conversationKey, cascadeId, action, reason, model }) {
+    const normalizedCascadeId = String(cascadeId ?? "").trim();
+    if (!normalizedCascadeId) return null;
+    const key = String(conversationKey ?? "").trim();
+    const sessionKeyHash = key
+      ? createHash("sha256").update(key).digest("hex").slice(0, 16)
+      : "";
+    const traceKey = sessionKeyHash || `${String(model ?? "unknown")}:unkeyed`;
+    const trace = {
+      cascadeId: normalizedCascadeId,
+      sessionKeyHash,
+      action: String(action ?? "start"),
+      reason: String(reason ?? "unknown"),
+      model: String(model ?? "unknown").slice(0, 128),
+      at: new Date(now()).toISOString(),
+    };
+    cascadeTraces.delete(traceKey);
+    cascadeTraces.set(traceKey, trace);
+    while (cascadeTraces.size > 32) cascadeTraces.delete(cascadeTraces.keys().next().value);
+    return trace;
+  }
+  return { record: recordCascadeTrace, snapshot: () => [...cascadeTraces.values()].map((entry) => ({ ...entry })) };
+}
+
+export function createTrafficDiagnosticsStore(onTrafficOutcome) {
+  const trafficByModel = new Map();
+
+    function recordTrafficOutcome(modelValue, outcome) {
+      const model = safeModelName(modelValue);
+      const at = new Date().toISOString();
+      const previous = trafficByModel.get(model) ?? {};
+      const entry = {
+        ...previous,
+        state: outcome.result === "success" ? "ok" : "error",
+        lastOutcome: { ...outcome, model, at },
+        ...(outcome.result === "success"
+          ? { lastSuccessAt: at }
+          : { lastFailure: { ...outcome, model, at } }),
+      };
+      trafficByModel.delete(model);
+      trafficByModel.set(model, entry);
+      while (trafficByModel.size > 32) trafficByModel.delete(trafficByModel.keys().next().value);
+    }
+
+    function trafficDiagnostics() {
+      return {
+        byModel: Object.fromEntries([...trafficByModel].map(([model, entry]) => [model, {
+          ...entry,
+          lastOutcome: { ...entry.lastOutcome },
+          ...(entry.lastFailure ? { lastFailure: { ...entry.lastFailure } } : {}),
+        }])),
+      };
+    }
+  return { recordTrafficOutcome, trafficDiagnostics };
+}
+
+export function safeModelName(value) {
+  const model = String(value ?? "unknown").trim().replace(/[^a-zA-Z0-9_.:/-]/g, "").slice(0, 128);
+  return model || "unknown";
+}
+
+export function safeErrorCode(error, mapped, isAdapterError = false) {
+  const candidates = [error?.cause?.code, error?.details?.code, error?.response?.data?.error?.code];
+  for (const candidate of candidates) {
+    const code = String(candidate ?? "").trim();
+    if (/^[a-zA-Z0-9_.-]{1,64}$/.test(code)) return code;
+  }
+  for (const message of [error?.cause?.message, error?.message]) {
+    const match = /\b[A-Z][A-Z0-9_]{2,63}\b/.exec(String(message ?? ""));
+    if (match) return match[0];
+  }
+  if (!isAdapterError) {
+    const code = String(error?.code ?? "").trim();
+    if (/^[a-zA-Z0-9_.-]{1,64}$/.test(code)) return code;
+  }
+  return String(mapped?.code ?? "upstream_error");
+}
+
+export function trafficSuggestion(statusCode, category) {
+  if (category === "quota_or_resource_limit") {
+    return "Provider returned 429; inspect usage or resource limits, retry later, or choose another configured provider manually. No account or provider was switched.";
+  }
+  if (statusCode === 401 || statusCode === 403) return "Check the Antigravity signed-in state in its own app.";
+  if (statusCode === 504) return "Retry after the Antigravity request timeout has cleared.";
+  if (statusCode >= 500) return "Check Antigravity Desktop readiness and retry.";
+  return "Review the request and the local provider response.";
+}
+
+export function mapAntigravityProviderError(error, ErrorType) {
+  if (error instanceof ErrorType) return error;
+  const message = String(error?.message ?? error ?? "Antigravity request failed.");
+  const statusCode = Number(error?.statusCode ?? error?.status ?? 0);
+  if (error?.code === "prompt_budget_insufficient") {
+    return new ErrorType(message, {
+      cause: error,
+      statusCode: 400,
+      code: "prompt_budget_insufficient",
+      type: "invalid_request_error",
+    });
+  }
+  if (statusCode === 401 || statusCode === 403 || /(?:login|sign[ -]?in|unauthori[sz]ed|forbidden)/i.test(message)) {
+    return new ErrorType(message, { cause: error, statusCode: 401, code: "authentication_error" });
+  }
+  if (statusCode === 400 && /(?:user\s+)?location is not supported|unsupported (?:user\s+)?location/i.test(message)) {
+    return new ErrorType(message, {
+      cause: error,
+      statusCode: 400,
+      code: "unsupported_location",
+      type: "invalid_request_error",
+    });
+  }
+  if (statusCode === 429 || /(?:RESOURCE_EXHAUSTED|quota|usage limit|rate limit)/i.test(message)) {
+    return new ErrorType(message, { cause: error, statusCode: 429, code: "quota_exceeded" });
+  }
+  if (statusCode === 504 || error?.name === "TimeoutError" || /timed? out|timeout/i.test(message)) {
+    return new ErrorType(message, { cause: error, statusCode: 504, code: "upstream_timeout" });
+  }
+  if (isNetworkError(error)) {
+    return new ErrorType(message, { cause: error, statusCode: 502, code: "upstream_network_error" });
+  }
+  if (statusCode >= 500) {
+    return new ErrorType(message, { cause: error, statusCode: 503, code: "upstream_service_error" });
+  }
+  return new ErrorType(message, { cause: error, statusCode: 502, code: "upstream_error" });
+}
+
+function isNetworkError(error) {
+  return ["ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "EAI_AGAIN", "UND_ERR_CONNECT_TIMEOUT"]
+    .includes(String(error?.code ?? error?.cause?.code ?? ""))
+    || /fetch failed|connection (?:refused|reset)|socket hang up/i.test(String(error?.message ?? ""));
+}
+
+export function normalizeCascadeCalls(calls, ErrorType) {
+  if (!Array.isArray(calls) || calls.length === 0) {
+    throw new ErrorType("Antigravity tool event contains no calls.", {
+      statusCode: 502,
+      code: "empty_tool_calls",
+    });
+  }
+  const ids = new Set();
+  return calls.map((call) => {
+    const callId = String(call?.callId ?? "").trim();
+    const name = normalizeReturnedToolName(call?.name);
+    if (!callId || !name || ids.has(callId)) {
+      throw new ErrorType("Antigravity tool calls require stable unique IDs and names.", {
+        statusCode: 502,
+        code: "invalid_cascade_tool_call",
+      });
+    }
+    const argumentsValue = call?.arguments ?? {};
+    if (!argumentsValue || typeof argumentsValue !== "object" || Array.isArray(argumentsValue)) {
+      throw new ErrorType("Antigravity tool call arguments must be a JSON object.", {
+        statusCode: 502,
+        code: "invalid_cascade_tool_arguments",
+      });
+    }
+    let argumentsJson;
+    try {
+      argumentsJson = JSON.stringify(argumentsValue);
+    } catch (error) {
+      throw new ErrorType("Antigravity tool call arguments must be JSON serializable.", {
+        cause: error,
+        statusCode: 502,
+        code: "invalid_cascade_tool_arguments",
+      });
+    }
+    ids.add(callId);
+    return { callId, name, arguments: argumentsValue, argumentsJson };
+  });
+}
+
+export function normalizeReturnedToolName(value) {
+  const name = String(value ?? "").trim();
+  return {
+    "functions.exec": "exec_command",
+    "functions.apply_patch": "apply_patch",
+  }[name] ?? name;
 }

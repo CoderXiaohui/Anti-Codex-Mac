@@ -1,8 +1,12 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 
 import {
   DEFAULT_TOOL_CONTINUATION_TIMEOUT_MS,
   createSessionStore,
+  mapAntigravityProviderError,
+  normalizeCascadeCalls,
+  normalizeReturnedToolName,
+  createCascadeTraceStore,
   extractConversationKey,
   isNativeCodexTaskSuggestionsRequest,
   isNativeCodexTitleRequest,
@@ -32,7 +36,7 @@ export function createAntigravityChatAdapter(options = {}) {
   }
 
   const now = options.now ?? Date.now;
-  const cascadeTraces = new Map();
+  const { record: recordCascadeTrace, snapshot: cascadeTraceSnapshot } = createCascadeTraceStore(now);
   const idFactory = options.idFactory ?? (() => `chatcmpl_${randomUUID().replaceAll("-", "")}`);
   const readNativeCustomInstructions = typeof options.nativeCustomInstructions === "function"
     ? options.nativeCustomInstructions
@@ -46,27 +50,6 @@ export function createAntigravityChatAdapter(options = {}) {
     createError: (msg, opts) => new ChatAdapterError(msg, opts),
   });
 
-  function recordCascadeTrace({ conversationKey, cascadeId, action, reason, model }) {
-    const normalizedCascadeId = String(cascadeId ?? "").trim();
-    if (!normalizedCascadeId) return null;
-    const key = String(conversationKey ?? "").trim();
-    const sessionKeyHash = key
-      ? createHash("sha256").update(key).digest("hex").slice(0, 16)
-      : "";
-    const traceKey = sessionKeyHash || `${String(model ?? "unknown")}:unkeyed`;
-    const trace = {
-      cascadeId: normalizedCascadeId,
-      sessionKeyHash,
-      action: String(action ?? "start"),
-      reason: String(reason ?? "unknown"),
-      model: String(model ?? "unknown").slice(0, 128),
-      at: new Date(now()).toISOString(),
-    };
-    cascadeTraces.delete(traceKey);
-    cascadeTraces.set(traceKey, trace);
-    while (cascadeTraces.size > 32) cascadeTraces.delete(cascadeTraces.keys().next().value);
-    return trace;
-  }
 
   async function account(requestOptions = {}) {
     if (typeof client.getReadiness !== "function") {
@@ -140,6 +123,10 @@ export function createAntigravityChatAdapter(options = {}) {
         : "start";
     const traceReason = prepared.reason
       ?? (prepared.kind === "follow_up" ? "history_matched" : "no_existing_continuation");
+    const recordTrace = (cascadeId) => recordCascadeTrace({
+      conversationKey: prepared.conversationKey, cascadeId,
+      action: traceAction, reason: traceReason, model,
+    });
     const resumedByOwner = prepared.kind === "resume" && prepared.claimMode === "owner";
     const replayedResume = prepared.kind === "resume" && !resumedByOwner;
     const retainConversation = Boolean(prepared.conversationKey)
@@ -162,13 +149,7 @@ export function createAntigravityChatAdapter(options = {}) {
       if (prepared.kind === "resume") {
         continuation = prepared.record.continuation;
         tracedCascadeId = String(continuation?.cascadeId ?? "");
-        recordCascadeTrace({
-          conversationKey: prepared.conversationKey,
-          cascadeId: tracedCascadeId,
-          action: traceAction,
-          reason: traceReason,
-          model,
-        });
+        recordTrace(tracedCascadeId);
         events = resumedByOwner
           ? client.resume(continuation, prepared.results, {
             model,
@@ -180,13 +161,7 @@ export function createAntigravityChatAdapter(options = {}) {
       } else if (prepared.kind === "follow_up") {
         continuation = prepared.continuation;
         tracedCascadeId = String(continuation?.cascadeId ?? "");
-        recordCascadeTrace({
-          conversationKey: prepared.conversationKey,
-          cascadeId: tracedCascadeId,
-          action: traceAction,
-          reason: traceReason,
-          model,
-        });
+        recordTrace(tracedCascadeId);
         events = client.followUp(continuation, {
           model,
           userText: prepared.userText,
@@ -209,13 +184,7 @@ export function createAntigravityChatAdapter(options = {}) {
           ...(retainConversation ? { retainConversation: true, onTurnCompleted } : {}),
           onCascadeCreated: (createdContinuation) => {
             tracedCascadeId = String(createdContinuation?.cascadeId ?? "");
-            recordCascadeTrace({
-              conversationKey: prepared.conversationKey,
-              cascadeId: tracedCascadeId,
-              action: traceAction,
-              reason: traceReason,
-              model,
-            });
+            recordTrace(tracedCascadeId);
           },
           signal,
         });
@@ -267,7 +236,7 @@ export function createAntigravityChatAdapter(options = {}) {
               code: "cascade_continuation_missing",
             });
           }
-          const calls = normalizeCascadeCalls(event.calls);
+          const calls = normalizeCascadeCalls(event.calls, ChatAdapterError);
           assistantMessage = {
             role: "assistant",
             content: null,
@@ -278,13 +247,7 @@ export function createAntigravityChatAdapter(options = {}) {
             })),
           };
           tracedCascadeId = String(continuation.cascadeId ?? tracedCascadeId);
-          recordCascadeTrace({
-            conversationKey: prepared.conversationKey,
-            cascadeId: tracedCascadeId,
-            action: traceAction,
-            reason: traceReason,
-            model,
-          });
+          recordTrace(tracedCascadeId);
           if (!replayedResume) {
             await sessions.put(continuation, calls, {
               replacingRecord: resumedByOwner ? prepared.record : null,
@@ -318,13 +281,7 @@ export function createAntigravityChatAdapter(options = {}) {
         }
         if (event?.type === "done") {
           tracedCascadeId = String(event.result?.cascadeId ?? continuation?.cascadeId ?? tracedCascadeId);
-          recordCascadeTrace({
-            conversationKey: prepared.conversationKey,
-            cascadeId: tracedCascadeId,
-            action: traceAction,
-            reason: traceReason,
-            model,
-          });
+          recordTrace(tracedCascadeId);
           const retainedTarget = completedContinuation
             ?? (retainConversation && continuation?.retained ? continuation : null);
           if (retainConversation && retainedTarget) {
@@ -427,7 +384,7 @@ export function createAntigravityChatAdapter(options = {}) {
       return sessions.conversationSize;
     },
     getDiagnostics() {
-      return { cascadeTrace: [...cascadeTraces.values()].map((trace) => ({ ...trace })) };
+      return { cascadeTrace: cascadeTraceSnapshot() };
     },
   };
 }
@@ -1111,53 +1068,6 @@ function normalizeToolChoice(value) {
   return String(value);
 }
 
-function normalizeCascadeCalls(calls) {
-  if (!Array.isArray(calls) || calls.length === 0) {
-    throw new ChatAdapterError("Antigravity tool event contains no calls.", {
-      statusCode: 502,
-      code: "empty_tool_calls",
-    });
-  }
-  const ids = new Set();
-  return calls.map((call) => {
-    const callId = String(call?.callId ?? "").trim();
-    const name = normalizeReturnedToolName(call?.name);
-    if (!callId || !name || ids.has(callId)) {
-      throw new ChatAdapterError("Antigravity tool calls require stable unique IDs and names.", {
-        statusCode: 502,
-        code: "invalid_cascade_tool_call",
-      });
-    }
-    const argumentsValue = call?.arguments ?? {};
-    if (!argumentsValue || typeof argumentsValue !== "object" || Array.isArray(argumentsValue)) {
-      throw new ChatAdapterError("Antigravity tool call arguments must be a JSON object.", {
-        statusCode: 502,
-        code: "invalid_cascade_tool_arguments",
-      });
-    }
-    let argumentsJson;
-    try {
-      argumentsJson = JSON.stringify(argumentsValue);
-    } catch (error) {
-      throw new ChatAdapterError("Antigravity tool call arguments must be JSON serializable.", {
-        cause: error,
-        statusCode: 502,
-        code: "invalid_cascade_tool_arguments",
-      });
-    }
-    ids.add(callId);
-    return { callId, name, arguments: argumentsValue, argumentsJson };
-  });
-}
-
-function normalizeReturnedToolName(value) {
-  const name = String(value ?? "").trim();
-  return {
-    "functions.exec": "exec_command",
-    "functions.apply_patch": "apply_patch",
-  }[name] ?? name;
-}
-
 function chunk(base, delta, finishReason, usage) {
   return {
     ...base,
@@ -1171,51 +1081,11 @@ function invalidRequest(message, code = "invalid_request") {
 }
 
 export function mapAntigravityError(error) {
-  if (error instanceof ChatAdapterError) return error;
-  const message = String(error?.message ?? error ?? "Antigravity request failed.");
-  const statusCode = Number(error?.statusCode ?? error?.status ?? 0);
-  if (error?.code === "prompt_budget_insufficient") {
-    return new ChatAdapterError(message, {
-      cause: error,
-      statusCode: 400,
-      code: "prompt_budget_insufficient",
-      type: "invalid_request_error",
-    });
-  }
-  if (statusCode === 401 || statusCode === 403 || /(?:login|sign[ -]?in|unauthori[sz]ed|forbidden)/i.test(message)) {
-    return new ChatAdapterError(message, { cause: error, statusCode: 401, code: "authentication_error" });
-  }
-  if (statusCode === 400 && /(?:user\s+)?location is not supported|unsupported (?:user\s+)?location/i.test(message)) {
-    return new ChatAdapterError(message, {
-      cause: error,
-      statusCode: 400,
-      code: "unsupported_location",
-      type: "invalid_request_error",
-    });
-  }
-  if (statusCode === 429 || /(?:RESOURCE_EXHAUSTED|quota|usage limit|rate limit)/i.test(message)) {
-    return new ChatAdapterError(message, { cause: error, statusCode: 429, code: "quota_exceeded" });
-  }
-  if (statusCode === 504 || error?.name === "TimeoutError" || /timed? out|timeout/i.test(message)) {
-    return new ChatAdapterError(message, { cause: error, statusCode: 504, code: "upstream_timeout" });
-  }
-  if (isNetworkError(error)) {
-    return new ChatAdapterError(message, { cause: error, statusCode: 502, code: "upstream_network_error" });
-  }
-  if (statusCode >= 500) {
-    return new ChatAdapterError(message, { cause: error, statusCode: 503, code: "upstream_service_error" });
-  }
-  return new ChatAdapterError(message, { cause: error, statusCode: 502, code: "upstream_error" });
+  return mapAntigravityProviderError(error, ChatAdapterError);
 }
 
 function isAbortError(error) {
   return error?.name === "AbortError" || error?.code === "ABORT_ERR";
-}
-
-function isNetworkError(error) {
-  return ["ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "EAI_AGAIN", "UND_ERR_CONNECT_TIMEOUT"]
-    .includes(String(error?.code ?? error?.cause?.code ?? ""))
-    || /fetch failed|connection (?:refused|reset)|socket hang up/i.test(String(error?.message ?? ""));
 }
 
 function positiveInteger(value, fallback) {

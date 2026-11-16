@@ -4,6 +4,10 @@ import { createServer } from "node:http";
 import { ChatAdapterError, mapAntigravityError } from "./antigravity-chat-adapter.mjs";
 import {
   MAX_CHAT_BODY_BYTES,
+  createTrafficDiagnosticsStore,
+  safeModelName,
+  safeErrorCode,
+  trafficSuggestion,
   boundedPositiveInteger,
   extractConversationKey,
 } from "../antigravity-contract.mjs";
@@ -27,34 +31,7 @@ export async function createAntigravityChatServer(options = {}) {
   const streamHeartbeatMs = boundedPositiveInteger(options.streamHeartbeatMs, 15_000, 60_000);
   const authToken = String(options.authToken || randomBytes(32).toString("base64url"));
   const active = new Set();
-  const trafficByModel = new Map();
-
-  function recordTrafficOutcome(modelValue, outcome) {
-    const model = safeModelName(modelValue);
-    const at = new Date().toISOString();
-    const previous = trafficByModel.get(model) ?? {};
-    const entry = {
-      ...previous,
-      state: outcome.result === "success" ? "ok" : "error",
-      lastOutcome: { ...outcome, model, at },
-      ...(outcome.result === "success"
-        ? { lastSuccessAt: at }
-        : { lastFailure: { ...outcome, model, at } }),
-    };
-    trafficByModel.delete(model);
-    trafficByModel.set(model, entry);
-    while (trafficByModel.size > 32) trafficByModel.delete(trafficByModel.keys().next().value);
-  }
-
-  function trafficDiagnostics() {
-    return {
-      byModel: Object.fromEntries([...trafficByModel].map(([model, entry]) => [model, {
-        ...entry,
-        lastOutcome: { ...entry.lastOutcome },
-        ...(entry.lastFailure ? { lastFailure: { ...entry.lastFailure } } : {}),
-      }])),
-    };
-  }
+  const { recordTrafficOutcome, trafficDiagnostics } = createTrafficDiagnosticsStore(options.onTrafficOutcome);
 
   const server = createServer(async (request, response) => {
     const controller = new AbortController();
@@ -158,7 +135,7 @@ export async function createAntigravityChatServer(options = {}) {
           result: "failure",
           category,
           statusCode: mapped.statusCode,
-          code: safeErrorCode(error, mapped),
+          code: safeErrorCode(error, mapped, error instanceof ChatAdapterError),
           suggestion: trafficSuggestion(mapped.statusCode, category),
         });
       }
@@ -211,38 +188,6 @@ export async function createAntigravityChatServer(options = {}) {
     trafficDiagnostics,
     close,
   };
-}
-
-function safeModelName(value) {
-  const model = String(value ?? "unknown").trim().replace(/[^a-zA-Z0-9_.:/-]/g, "").slice(0, 128);
-  return model || "unknown";
-}
-
-function safeErrorCode(error, mapped) {
-  const candidates = [error?.cause?.code, error?.details?.code, error?.response?.data?.error?.code];
-  for (const candidate of candidates) {
-    const code = String(candidate ?? "").trim();
-    if (/^[a-zA-Z0-9_.-]{1,64}$/.test(code)) return code;
-  }
-  for (const message of [error?.cause?.message, error?.message]) {
-    const match = /\b[A-Z][A-Z0-9_]{2,63}\b/.exec(String(message ?? ""));
-    if (match) return match[0];
-  }
-  if (!(error instanceof ChatAdapterError)) {
-    const code = String(error?.code ?? "").trim();
-    if (/^[a-zA-Z0-9_.-]{1,64}$/.test(code)) return code;
-  }
-  return String(mapped?.code ?? "upstream_error");
-}
-
-function trafficSuggestion(statusCode, category) {
-  if (category === "quota_or_resource_limit") {
-    return "Provider returned 429; inspect usage or resource limits, retry later, or choose another configured provider manually. No account or provider was switched.";
-  }
-  if (statusCode === 401 || statusCode === 403) return "Check the Antigravity signed-in state in its own app.";
-  if (statusCode === 504) return "Retry after the Antigravity request timeout has cleared.";
-  if (statusCode >= 500) return "Check Antigravity Desktop readiness and retry.";
-  return "Review the request and the local provider response.";
 }
 
 async function nextStreamingItemWithHeartbeat(iterator, response, heartbeatMs) {
