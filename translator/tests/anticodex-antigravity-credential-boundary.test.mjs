@@ -149,6 +149,37 @@ ConvertTo-Json -InputObject $result -Compress`, JSON.stringify(cases));
   assert.deepEqual(JSON.parse(result.stdout), [true, true, true, false, false, false, false, false, false, false, false, false, false, false]);
 });
 
+test("credential schema accepts current writer and id-token-email metadata with strict bounds", { skip: process.platform !== "win32" }, () => {
+  const token = { access_token: "synthetic", token_type: "Bearer", refresh_token: "synthetic-refresh", expiry: "2099-01-01T00:00:00Z", expires_in: 3600 };
+  const observed = { token, auth_method: "oauth", id_token_email: "reader@example.test", writer_id: `${"W".repeat(43)}._:-` };
+  const cases = [observed,
+    { ...observed, id_token_email: "" },
+    { ...observed, id_token_email: "bad email@example.test" },
+    { ...observed, id_token_email: `a@${"d".repeat(251)}.test` },
+    { ...observed, id_token_email: "bad\u0001@example.test" },
+    { ...observed, id_token_email: "reader@example.test\n" },
+    { ...observed, id_token_email: true },
+    { ...observed, writer_id: "" },
+    { ...observed, writer_id: "bad identifier" },
+    { ...observed, writer_id: `${"W".repeat(129)}` },
+    { ...observed, writer_id: 43 },
+    { ...observed, writer_id: "bad\u0001id" },
+    { ...observed, writer_id: "writer\n" },
+    { ...observed, unexpected: "unknown" },
+    { ...observed, token: { ...token, expires_in: "3600" } },
+  ];
+  const result = runPowerShell(`
+$ErrorActionPreference='Stop'; Set-StrictMode -Version Latest
+$ast=[Management.Automation.Language.Parser]::ParseFile(${psLiteral(helper)},[ref]$null,[ref]$null)
+$fn=$ast.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.FunctionDefinitionAst] -and $_.Name -eq 'Assert-OfficialCredentialJson' }
+. ([scriptblock]::Create($fn.Extent.Text))
+$cases=[Console]::In.ReadToEnd() | ConvertFrom-Json
+$result=@($cases | ForEach-Object {try {Assert-OfficialCredentialJson ([Text.Encoding]::UTF8.GetBytes(($_ | ConvertTo-Json -Depth 8 -Compress))) | Out-Null; $true} catch {$false}})
+ConvertTo-Json -InputObject $result -Compress`, JSON.stringify(cases));
+  assert.equal(result.status, 0);
+  assert.deepEqual(JSON.parse(result.stdout), [true, false, false, false, false, false, false, false, false, false, false, false, false, false, false]);
+});
+
 test("DPAPI restore decodes only the supplied synthetic credential without touching the keyring", { skip: process.platform !== "win32" }, () => {
   const fake = JSON.stringify({ token: { access_token: "synthetic-access", token_type: "Bearer", refresh_token: "synthetic-refresh", expiry: "2030-01-01T00:00:00Z" }, auth_method: "oauth" });
   const sealed = runPowerShell("Add-Type -AssemblyName System.Security; $b=[Text.Encoding]::UTF8.GetBytes([Console]::In.ReadToEnd()); $e=[Text.Encoding]::UTF8.GetBytes('anticodex-antigravity-accounts-v1'); [Console]::Write('dpapi:v1:'+[Convert]::ToBase64String([Security.Cryptography.ProtectedData]::Protect($b,$e,[Security.Cryptography.DataProtectionScope]::CurrentUser)))", fake);

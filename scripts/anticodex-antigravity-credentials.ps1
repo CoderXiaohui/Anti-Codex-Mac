@@ -40,7 +40,25 @@ function Assert-OfficialCredentialJson([byte[]]$Blob) {
     $top = @($value.PSObject.Properties.Name)
     $token = $value.token
     $tokenFields = if ($null -ne $token) { @($token.PSObject.Properties.Name) } else { @() }
-    $validTop = $top.Count -eq 2 -or ($top.Count -eq 3 -and $top -contains "id_token" -and $value.id_token -is [string])
+    $knownTopFields = @("token", "auth_method", "id_token", "id_token_email", "writer_id")
+    $unknownTopFields = @($top | Where-Object { $knownTopFields -notcontains $_ })
+    $validIdToken = $top -notcontains "id_token" -or $value.id_token -is [string]
+    $validIdTokenEmail = $top -notcontains "id_token_email" -or (
+        $value.id_token_email -is [string] -and
+        $value.id_token_email.Length -ge 1 -and
+        $value.id_token_email.Length -le 254 -and
+        $value.id_token_email -cmatch '\A[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,}\z'
+    )
+    $validWriterId = $top -notcontains "writer_id" -or (
+        $value.writer_id -is [string] -and
+        $value.writer_id.Length -ge 1 -and
+        $value.writer_id.Length -le 128 -and
+        $value.writer_id -cmatch '\A[A-Za-z0-9._:-]{1,128}\z'
+    )
+    $validTop = $top.Count -ge 2 -and $top.Count -le $knownTopFields.Count -and
+        $unknownTopFields.Count -eq 0 -and
+        $top -contains "token" -and $top -contains "auth_method" -and
+        $validIdToken -and $validIdTokenEmail -and $validWriterId
     $validTokenFields = $tokenFields.Count -eq 4
     if ($tokenFields.Count -eq 5 -and $tokenFields -contains "expires_in") {
         # Current Antigravity includes the OAuth lifetime alongside its absolute expiry.
