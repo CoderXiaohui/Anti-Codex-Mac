@@ -128,6 +128,8 @@ test("serves anonymized account readiness without model traffic", async () => {
       fingerprint,
       planName: "Google AI Pro",
       tierName: "",
+      traffic: { byModel: {} },
+      cascadeTrace: [],
     });
     assert.equal(client.starts?.length ?? 0, 0);
   } finally {
@@ -291,6 +293,99 @@ test("returns OpenAI-shaped JSON errors before streaming headers", async () => {
         code: "quota_exceeded",
       },
     });
+  } finally {
+    await server.close();
+  }
+});
+
+test("account diagnostics retain each model's latest traffic outcome and classify 429 without claiming quota exhaustion", async () => {
+  const models = [
+    { id: "gemini-model-a", displayName: "Model A" },
+    { id: "gemini-model-b", displayName: "Model B" },
+  ];
+  const client = {
+    ...fakeClient([]),
+    async listModels() { return models; },
+    async getReadiness() { return { signedIn: false }; },
+    start(request) {
+      return (async function* () {
+        if (request.model === "gemini-model-a") {
+          throw Object.assign(new Error("RESOURCE_EXHAUSTED"), { statusCode: 429 });
+        }
+        yield { type: "text_delta", delta: "healthy" };
+        yield { type: "done" };
+      }());
+    },
+  };
+  const server = await createAntigravityChatServer({ adapter: adapterFor(client) });
+  try {
+    const failed = await authorizedFetch(server, "/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body({ model: "gemini-model-a" })),
+    });
+    assert.equal(failed.status, 429);
+
+    const succeeded = await authorizedFetch(server, "/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body({ model: "gemini-model-b" })),
+    });
+    assert.equal(succeeded.status, 200);
+
+    const account = await authorizedFetch(server, "/account");
+    const diagnostics = await account.json();
+    assert.equal(diagnostics.signedIn, false);
+    assert.equal(diagnostics.traffic.byModel["gemini-model-a"].state, "error");
+    assert.equal(diagnostics.traffic.byModel["gemini-model-a"].lastFailure.category, "quota_or_resource_limit");
+    assert.equal(diagnostics.traffic.byModel["gemini-model-a"].lastFailure.statusCode, 429);
+    assert.equal(diagnostics.traffic.byModel["gemini-model-a"].lastFailure.code, "RESOURCE_EXHAUSTED");
+    assert.match(diagnostics.traffic.byModel["gemini-model-a"].lastFailure.suggestion, /Provider returned 429/);
+    assert.doesNotMatch(diagnostics.traffic.byModel["gemini-model-a"].lastFailure.suggestion, /quota exhausted/i);
+    assert.equal(diagnostics.traffic.byModel["gemini-model-b"].state, "ok");
+    assert.equal(diagnostics.traffic.byModel["gemini-model-b"].lastOutcome.result, "success");
+  } finally {
+    await server.close();
+  }
+});
+
+test("account cascade trace exposes only a hashed conversation key", async () => {
+  const conversationKey = "sensitive-thread-key-must-not-leak";
+  const client = {
+    ...fakeClient([]),
+    async getReadiness() { return { signedIn: false }; },
+    followUp() {
+      return (async function* () { yield { type: "done" }; }());
+    },
+    start(request) {
+      const continuation = { cascadeId: "cascade_trace_test", registeredToolNames: new Set(), retained: true };
+      request.onCascadeCreated?.(continuation);
+      return (async function* () {
+        yield { type: "text_delta", delta: "done" };
+        request.onTurnCompleted?.(continuation);
+        yield { type: "done", result: { cascadeId: continuation.cascadeId } };
+      }());
+    },
+  };
+  const server = await createAntigravityChatServer({ adapter: adapterFor(client) });
+  try {
+    const response = await authorizedFetch(server, "/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body({ prompt_cache_key: conversationKey })),
+    });
+    assert.equal(response.status, 200);
+    await response.json();
+
+    const account = await authorizedFetch(server, "/account");
+    const payload = await account.json();
+    assert.equal(payload.cascadeTrace.length, 1);
+    assert.equal(payload.cascadeTrace[0].cascadeId, "cascade_trace_test");
+    assert.equal(payload.cascadeTrace[0].sessionKeyHash.length, 16);
+    assert.notEqual(payload.cascadeTrace[0].sessionKeyHash, conversationKey);
+    assert.match(payload.cascadeTrace[0].action, /start/);
+    assert.equal(payload.cascadeTrace[0].reason, "no_existing_continuation");
+    assert.doesNotMatch(JSON.stringify(payload.cascadeTrace), new RegExp(conversationKey));
   } finally {
     await server.close();
   }

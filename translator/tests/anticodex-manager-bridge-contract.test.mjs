@@ -2080,8 +2080,8 @@ test("Manager correlates fresh background reports and keeps their final result v
 });
 
 test("current Manager UI exposes no legacy session-controller action", () => {
-  assert.match(managerInject, /const VERSION = "native-panel-v121"/);
-  assert.match(managerOpenInject, /__ANTICODEX_MANAGER_VERSION__ === "native-panel-v121"/);
+  assert.match(managerInject, /const VERSION = "native-panel-v122"/);
+  assert.match(managerOpenInject, /__ANTICODEX_MANAGER_VERSION__ === "native-panel-v122"/);
   assert.match(managerInject, /\.anticodex-head\{[^}]*position:sticky;top:0;z-index:3;background:var\(--ac-bg\)/);
   for (const [name, text] of Object.entries({
     source,
@@ -2093,6 +2093,27 @@ test("current Manager UI exposes no legacy session-controller action", () => {
   })) {
     assert.doesNotMatch(text, /resetAntigravitySessionLock/, `${name} still exposes the removed session reset`);
   }
+});
+
+test("Manager health consumes adapter traffic instead of hardcoding chat readiness", () => {
+  assert.doesNotMatch(managerService, /accountTrafficReady:\s*null,\s*\n\s*accountTrafficModel/);
+  assert.match(managerService, /accountTrafficHealthFields\(/);
+  assert.match(managerService, /trafficFailureMessage/);
+  assert.match(managerService, /上游额度或资源受限/);
+  assert.match(managerService, /尚未验证对话/);
+});
+
+test("Manager status copy stays honest about unknown and limited upstream traffic", () => {
+  assert.match(managerInject, /health\?\.accountTrafficMessage/);
+  assert.match(managerInject, /\\u5c1a\\u672a\\u9a8c\\u8bc1\\u5bf9\\u8bdd/);
+  assert.match(managerInject, /\\u4e0a\\u6e38\\u989d\\u5ea6\\u6216\\u8d44\\u6e90\\u53d7\\u9650/);
+  assert.match(managerInject, /quota_or_resource_limit/);
+  assert.match(managerInject, /snapshotRows/);
+  assert.match(managerInject, /\\u672c\\u5730\\u529f\\u80fd\\u5feb\\u7167\\u4e0d\\u53ef\\u7528/);
+  const loadBlock = managerInject.match(/async function load\(options = \{\}\) \{[\s\S]*?\n    \}/)?.[0] ?? "";
+  assert.match(loadBlock, /resultCard\.getAttribute\("data-anticodex-result-mode"\) === "upstream-config"[\s\S]{0,80}return;/);
+  const refreshBlock = extractNamedFunction(managerInject, "refreshManagerStatus");
+  assert.match(refreshBlock, /upstreamConfigOpen/);
 });
 
 test("Manager exposes prompt layers without weakening required compatibility prompts", () => {

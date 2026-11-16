@@ -132,7 +132,11 @@ test("credential schema accepts optional identity token but rejects unknown or m
   const token = { access_token: "synthetic", token_type: "Bearer", refresh_token: "synthetic-refresh", expiry: "2099-01-01T00:00:00Z" };
   const old = { token, auth_method: "oauth" };
   const modern = { ...old, id_token: "synthetic-id" };
-  const cases = [old, modern, { ...modern, extra: "unknown" }, ...[{}, 1, null].map(id_token => ({ ...old, id_token })), { token }, { ...old, token: { ...token, access_token: "" } }];
+  const expiring = { ...modern, token: { ...token, expires_in: 3600 } };
+  const cases = [old, modern, expiring,
+    ...[-1, "3600", null, 1.5].map(expires_in => ({ ...modern, token: { ...token, expires_in } })),
+    { ...modern, token: { ...token, unexpected: true } },
+    { ...modern, extra: "unknown" }, ...[{}, 1, null].map(id_token => ({ ...old, id_token })), { token }, { ...old, token: { ...token, access_token: "" } }];
   const result = runPowerShell(`
 $ErrorActionPreference='Stop'; Set-StrictMode -Version Latest
 $ast=[Management.Automation.Language.Parser]::ParseFile(${psLiteral(helper)},[ref]$null,[ref]$null)
@@ -142,7 +146,7 @@ $cases=[Console]::In.ReadToEnd() | ConvertFrom-Json
 $result=@($cases | ForEach-Object {try {Assert-OfficialCredentialJson ([Text.Encoding]::UTF8.GetBytes(($_ | ConvertTo-Json -Depth 8 -Compress))) | Out-Null; $true} catch {$false}})
 ConvertTo-Json -InputObject $result -Compress`, JSON.stringify(cases));
   assert.equal(result.status, 0);
-  assert.deepEqual(JSON.parse(result.stdout), [true, true, false, false, false, false, false, false]);
+  assert.deepEqual(JSON.parse(result.stdout), [true, true, true, false, false, false, false, false, false, false, false, false, false, false]);
 });
 
 test("DPAPI restore decodes only the supplied synthetic credential without touching the keyring", { skip: process.platform !== "win32" }, () => {

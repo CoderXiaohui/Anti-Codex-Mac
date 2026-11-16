@@ -10,6 +10,7 @@ import {
 } from "../provider/antigravity-cascade-client.mjs";
 import { createAntigravityChatAdapter } from "../provider/antigravity-chat-adapter.mjs";
 import * as cascadeClientModule from "../provider/antigravity-cascade-client.mjs";
+import { renderBoundedSystemPromptSections } from "../antigravity-contract.mjs";
 
 test("extracts only loopback listening ports owned by the Antigravity process", () => {
   const netstat = [
@@ -275,6 +276,16 @@ test("rejects a selected model without a positive message-token limit before sta
     /positive maxTokens/i,
   );
   assert.deepEqual(service.calls.map((call) => call.method), ["GetAvailableModels"]);
+});
+
+test("rejects a tiny model prompt budget that cannot hold required system context", () => {
+  assert.throws(() => renderBoundedSystemPromptSections([
+    { title: "Required instructions", content: "Keep the user's data private. ".repeat(500) },
+  ], {
+    maxMessageTokens: 100,
+    model: { maxOutputTokens: 25 },
+    tools: [],
+  }), /prompt.*budget|budget.*prompt/i);
 });
 
 test("starts a workspace-blind Cascade and returns one text terminal outcome", async () => {

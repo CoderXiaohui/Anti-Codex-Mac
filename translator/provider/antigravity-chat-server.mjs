@@ -27,11 +27,40 @@ export async function createAntigravityChatServer(options = {}) {
   const streamHeartbeatMs = boundedPositiveInteger(options.streamHeartbeatMs, 15_000, 60_000);
   const authToken = String(options.authToken || randomBytes(32).toString("base64url"));
   const active = new Set();
+  const trafficByModel = new Map();
+
+  function recordTrafficOutcome(modelValue, outcome) {
+    const model = safeModelName(modelValue);
+    const at = new Date().toISOString();
+    const previous = trafficByModel.get(model) ?? {};
+    const entry = {
+      ...previous,
+      state: outcome.result === "success" ? "ok" : "error",
+      lastOutcome: { ...outcome, model, at },
+      ...(outcome.result === "success"
+        ? { lastSuccessAt: at }
+        : { lastFailure: { ...outcome, model, at } }),
+    };
+    trafficByModel.delete(model);
+    trafficByModel.set(model, entry);
+    while (trafficByModel.size > 32) trafficByModel.delete(trafficByModel.keys().next().value);
+  }
+
+  function trafficDiagnostics() {
+    return {
+      byModel: Object.fromEntries([...trafficByModel].map(([model, entry]) => [model, {
+        ...entry,
+        lastOutcome: { ...entry.lastOutcome },
+        ...(entry.lastFailure ? { lastFailure: { ...entry.lastFailure } } : {}),
+      }])),
+    };
+  }
 
   const server = createServer(async (request, response) => {
     const controller = new AbortController();
     let finished = false;
     let iterator = null;
+    let requestedModel = "";
     active.add(controller);
 
     const abort = () => {
@@ -58,7 +87,11 @@ export async function createAntigravityChatServer(options = {}) {
       if (request.method === "GET" && url.pathname === "/v1/account") {
         const account = await adapter.account({ signal: controller.signal });
         finished = true;
-        sendJson(response, 200, account);
+        sendJson(response, 200, {
+          ...account,
+          traffic: trafficDiagnostics(),
+          cascadeTrace: adapter.getDiagnostics?.().cascadeTrace ?? [],
+        });
         return;
       }
       if (request.method !== "POST" || url.pathname !== "/v1/chat/completions") {
@@ -68,6 +101,7 @@ export async function createAntigravityChatServer(options = {}) {
       }
 
       const body = await readJsonBody(request, maxBodyBytes);
+      requestedModel = safeModelName(body?.model);
       const conversationKey = extractConversationKey(request.headers, body);
       const adapterOptions = conversationKey
         ? { signal: controller.signal, conversationKey }
@@ -103,6 +137,7 @@ export async function createAntigravityChatServer(options = {}) {
           response.write(`data: ${JSON.stringify(item.value)}\n\n`);
         }
         if (!response.destroyed && !controller.signal.aborted) {
+          recordTrafficOutcome(requestedModel, { result: "success", statusCode: 200 });
           response.write("data: [DONE]\n\n");
           finished = true;
           response.end();
@@ -112,10 +147,21 @@ export async function createAntigravityChatServer(options = {}) {
 
       const completion = await adapter.complete(body, adapterOptions);
       finished = true;
+      recordTrafficOutcome(requestedModel, { result: "success", statusCode: 200 });
       sendJson(response, 200, completion);
     } catch (error) {
       if (controller.signal.aborted || response.destroyed) return;
       const mapped = error instanceof ChatAdapterError ? error : mapAntigravityError(error);
+      if (request.method === "POST" && requestedModel) {
+        const category = mapped.statusCode === 429 ? "quota_or_resource_limit" : mapped.code;
+        recordTrafficOutcome(requestedModel, {
+          result: "failure",
+          category,
+          statusCode: mapped.statusCode,
+          code: safeErrorCode(error, mapped),
+          suggestion: trafficSuggestion(mapped.statusCode, category),
+        });
+      }
       const code = response.headersSent && mapped.code === "unsupported_location"
         ? "invalid_prompt"
         : mapped.code;
@@ -162,8 +208,41 @@ export async function createAntigravityChatServer(options = {}) {
     maxBodyBytes,
     streamHeartbeatMs,
     port: address.port,
+    trafficDiagnostics,
     close,
   };
+}
+
+function safeModelName(value) {
+  const model = String(value ?? "unknown").trim().replace(/[^a-zA-Z0-9_.:/-]/g, "").slice(0, 128);
+  return model || "unknown";
+}
+
+function safeErrorCode(error, mapped) {
+  const candidates = [error?.cause?.code, error?.details?.code, error?.response?.data?.error?.code];
+  for (const candidate of candidates) {
+    const code = String(candidate ?? "").trim();
+    if (/^[a-zA-Z0-9_.-]{1,64}$/.test(code)) return code;
+  }
+  for (const message of [error?.cause?.message, error?.message]) {
+    const match = /\b[A-Z][A-Z0-9_]{2,63}\b/.exec(String(message ?? ""));
+    if (match) return match[0];
+  }
+  if (!(error instanceof ChatAdapterError)) {
+    const code = String(error?.code ?? "").trim();
+    if (/^[a-zA-Z0-9_.-]{1,64}$/.test(code)) return code;
+  }
+  return String(mapped?.code ?? "upstream_error");
+}
+
+function trafficSuggestion(statusCode, category) {
+  if (category === "quota_or_resource_limit") {
+    return "Provider returned 429; inspect usage or resource limits, retry later, or choose another configured provider manually. No account or provider was switched.";
+  }
+  if (statusCode === 401 || statusCode === 403) return "Check the Antigravity signed-in state in its own app.";
+  if (statusCode === 504) return "Retry after the Antigravity request timeout has cleared.";
+  if (statusCode >= 500) return "Check Antigravity Desktop readiness and retry.";
+  return "Review the request and the local provider response.";
 }
 
 async function nextStreamingItemWithHeartbeat(iterator, response, heartbeatMs) {

@@ -41,8 +41,15 @@ function Assert-OfficialCredentialJson([byte[]]$Blob) {
     $token = $value.token
     $tokenFields = if ($null -ne $token) { @($token.PSObject.Properties.Name) } else { @() }
     $validTop = $top.Count -eq 2 -or ($top.Count -eq 3 -and $top -contains "id_token" -and $value.id_token -is [string])
+    $validTokenFields = $tokenFields.Count -eq 4
+    if ($tokenFields.Count -eq 5 -and $tokenFields -contains "expires_in") {
+        # Current Antigravity includes the OAuth lifetime alongside its absolute expiry.
+        $lifetime = $token.expires_in
+        $validTokenFields = ($lifetime -is [int] -or $lifetime -is [long] -or $lifetime -is [double] -or $lifetime -is [decimal]) -and
+            $lifetime -ge 0 -and $lifetime -le 9007199254740991 -and $lifetime -eq [Math]::Floor([double]$lifetime)
+    }
     if (-not $validTop -or $top -notcontains "token" -or $top -notcontains "auth_method" -or
-        $tokenFields.Count -ne 4 -or $tokenFields -notcontains "access_token" -or
+        -not $validTokenFields -or $tokenFields -notcontains "access_token" -or
         $tokenFields -notcontains "token_type" -or $tokenFields -notcontains "refresh_token" -or
         $tokenFields -notcontains "expiry" -or [string]::IsNullOrWhiteSpace([string]$token.access_token) -or
         [string]::IsNullOrWhiteSpace([string]$token.token_type) -or

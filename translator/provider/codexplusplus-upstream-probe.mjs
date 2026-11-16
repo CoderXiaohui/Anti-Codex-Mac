@@ -38,8 +38,8 @@ export function selectDefaultCodexPlusPlusModel(models = []) {
     ? models.map((item) => String(item ?? "").trim()).filter(Boolean)
     : [];
   if (candidates.length === 0) return "";
-  const nonTextPattern = /(?:^|[-_/:.])(embedding|embeddings|whisper|tts|moderation|rerank|dall-e|imagen|flux|stable-diffusion|audio|speech|transcribe|realtime)(?:$|[-_/:.])/i;
-  return candidates.find((id) => !nonTextPattern.test(id)) || candidates[0];
+  const nonTextPattern = /(?:^|[-_/:.])(embedding|embeddings|whisper|tts|moderation|rerank|dall-e|imagen|image|images|video|sora|flux|stable-diffusion|audio|speech|transcribe|realtime)(?:$|[-_/:.])/i;
+  return candidates.find((id) => !nonTextPattern.test(id)) || "";
 }
 
 export function buildCodexPlusPlusProbeRequest(value = {}) {
@@ -229,9 +229,10 @@ function probePath(pathname, protocol) {
 
 function modelsPath(baseUrl) {
   const url = new URL(baseUrl.href);
-  const pathname = `/${String(url.pathname || "").replace(/^\/+|\/+$/g, "")}`;
+  const pathname = `/${String(url.pathname || "").replace(/^\/+|\/+$/g, "")}`
+    .replace(/\/(?:chat\/completions|responses)$/, "");
   if (pathname.endsWith("/models")) return url.href;
-  url.pathname = `${pathname === "/" ? "" : pathname}/models`.replace(/\/+/g, "/");
+  url.pathname = `${!pathname || pathname === "/" ? "/v1" : pathname}/models`.replace(/\/+/g, "/");
   return url.href;
 }
 
@@ -253,6 +254,9 @@ function protocolResponseShapeError(protocol, text) {
   }
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return `did not contain a ${protocol === "responses" ? "Responses" : "Chat Completions"} response object.`;
+  }
+  if (body.error || ["failed", "cancelled"].includes(body.status)) {
+    return "contained an unsuccessful provider result.";
   }
   if (protocol === "responses") {
     if (body.object === "response" || Array.isArray(body.output) || typeof body.output_text === "string") return "";

@@ -47,11 +47,44 @@ export function hasUnregisteredTools(registeredToolNames, requestedTools) {
 }
 
 export function messageSignature(message) {
-  try {
-    return JSON.stringify(message);
-  } catch {
-    return `${String(message?.role ?? "")}:${String(message?.content ?? "")}`;
+  const role = String(message?.role ?? "").trim().toLowerCase();
+  const signature = { role };
+  if (Object.hasOwn(message ?? {}, "content")) signature.content = normalizeMessageContent(message.content);
+  if (message?.name !== undefined) signature.name = String(message.name);
+  if (message?.tool_call_id !== undefined) signature.tool_call_id = String(message.tool_call_id);
+  if (Array.isArray(message?.tool_calls)) {
+    signature.tool_calls = message.tool_calls.map((call) => ({
+      id: String(call?.id ?? ""),
+      type: String(call?.type ?? "function"),
+      name: String(call?.function?.name ?? ""),
+      arguments: stableJsonValue(call?.function?.arguments ?? ""),
+    }));
   }
+  if (message?.refusal !== undefined) signature.refusal = String(message.refusal);
+  return JSON.stringify(signature);
+}
+
+function normalizeMessageContent(content) {
+  if (content == null) return null;
+  if (typeof content === "string") return [{ type: "text", text: content }];
+  if (!Array.isArray(content)) return stableJsonValue(content);
+  return content.map((part) => {
+    if (typeof part === "string") return { type: "text", text: part };
+    if (part?.type === "text" || part?.text !== undefined) {
+      return { type: "text", text: String(part.text ?? "") };
+    }
+    if (part?.type === "image_url") {
+      const url = typeof part.image_url === "string" ? part.image_url : part.image_url?.url;
+      return { type: "image_url", image_url: String(url ?? "") };
+    }
+    return stableJsonValue(part);
+  });
+}
+
+function stableJsonValue(value) {
+  if (Array.isArray(value)) return value.map(stableJsonValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stableJsonValue(value[key])]));
 }
 
 function historyMessageToUserItems(message) {
@@ -69,18 +102,30 @@ function historyMessageToUserItems(message) {
   });
 }
 
-export function matchFollowUpConversation(existingConversation, { tools, history, userItems, structuredOutput }) {
+export function matchFollowUpConversation(existingConversation, { tools, history, userItems, structuredOutput, allowCompactedHistory = false }) {
   if (!existingConversation?.continuation || structuredOutput) return null;
   if (tools.length > 0 && !existingConversation.hasToolBridge) return null;
   if (hasUnregisteredTools(existingConversation.registeredToolNames, tools)) return null;
 
   const base = existingConversation.baseSignatures;
-  if (!Array.isArray(base) || base.length === 0 || history.length <= base.length) return null;
-  for (let index = 0; index < base.length; index += 1) {
-    if (messageSignature(history[index]) !== base[index]) return null;
+  if (!Array.isArray(base) || base.length === 0) return null;
+  let deltaStart = -1;
+  const exactPrefix = history.length > base.length
+    && base.every((signature, index) => messageSignature(history[index]) === signature);
+  if (exactPrefix) {
+    deltaStart = base.length;
+  } else if (allowCompactedHistory && existingConversation.lastAssistantSignature) {
+    const anchorIndex = history.findLastIndex(
+      (message) => messageSignature(message) === existingConversation.lastAssistantSignature,
+    );
+    if (anchorIndex < 0) return null;
+    const afterAnchor = history.slice(anchorIndex + 1);
+    if (afterAnchor.some((message) => String(message?.role ?? "").toLowerCase() !== "tool")) return null;
+    deltaStart = anchorIndex;
   }
 
-  const delta = history.slice(base.length);
+  if (deltaStart < 0 || history.length <= deltaStart) return null;
+  const delta = history.slice(deltaStart);
   let lastModelStepIndex = -1;
   let sawAssistant = false;
   for (let index = 0; index < delta.length; index += 1) {
@@ -245,25 +290,23 @@ export function renderBoundedSystemPromptSections(sections = [], budgetContext =
   const maxMessageTokens = Number(budgetContext?.maxMessageTokens ?? 0);
   let maxHistoryTokens = Infinity;
   let maxTotalPromptTokens = Infinity;
+  let toolTokens = 0;
 
   if (Number.isSafeInteger(maxMessageTokens) && maxMessageTokens > 0) {
     const rawOutput = Number(budgetContext?.model?.maxOutputTokens ?? 0);
     const outputReserve = Number.isSafeInteger(rawOutput) && rawOutput > 0
       ? Math.min(rawOutput, Math.floor(maxMessageTokens * 0.45))
       : Math.min(65_536, Math.floor(maxMessageTokens * 0.2));
-    const availableInput = Math.max(2_048, maxMessageTokens - outputReserve);
-    maxTotalPromptTokens = Math.max(1_024, Math.min(200_000, Math.floor(availableInput * 0.65)));
-    const toolTokens = Math.min(
-      Math.floor(maxTotalPromptTokens * 0.35),
-      estimatePromptTokens(JSON.stringify(budgetContext?.tools ?? [])),
-    );
+    const availableInput = maxMessageTokens - outputReserve;
+    maxTotalPromptTokens = Math.min(200_000, Math.floor(availableInput * 0.65));
+    toolTokens = estimatePromptTokens(JSON.stringify(budgetContext?.tools ?? []));
     const nonHistoryTokens = sections
       .filter((section) => section?.kind !== "chat_history")
       .reduce((sum, section) => sum + estimatePromptTokens(section?.content), 0) + 1_024;
-    maxHistoryTokens = Math.max(
-      512,
-      Math.min(150_000, maxTotalPromptTokens - toolTokens - Math.min(nonHistoryTokens, Math.floor(maxTotalPromptTokens * 0.45))),
-    );
+    if (maxTotalPromptTokens <= 0 || nonHistoryTokens + toolTokens > maxTotalPromptTokens) {
+      throw promptBudgetError();
+    }
+    maxHistoryTokens = Math.min(150_000, maxTotalPromptTokens - toolTokens - nonHistoryTokens);
   }
 
   const rendered = sections.flatMap((section) => {
@@ -290,26 +333,18 @@ export function renderBoundedSystemPromptSections(sections = [], budgetContext =
   });
 
   if (Number.isFinite(maxTotalPromptTokens)) {
-    let currentTokens = rendered.reduce((sum, item) => sum + estimatePromptTokens(item.content), 0);
-    if (currentTokens > maxTotalPromptTokens) {
-      for (let index = rendered.length - 1; index >= 0 && currentTokens > maxTotalPromptTokens; index -= 1) {
-        const item = rendered[index];
-        const itemTokens = estimatePromptTokens(item.content);
-        if (itemTokens <= 512) continue;
-        const excess = currentTokens - maxTotalPromptTokens;
-        const targetTokens = Math.max(512, itemTokens - excess - 64);
-        const approxChars = Math.max(512, Math.floor(targetTokens * 1.8));
-        item.content = truncateTextMiddle(
-          item.content,
-          Math.floor(approxChars * 0.65),
-          Math.floor(approxChars * 0.25),
-          "system instructions",
-        );
-        currentTokens = rendered.reduce((sum, entry) => sum + estimatePromptTokens(entry.content), 0);
-      }
-    }
+    const currentTokens = rendered.reduce((sum, item) => sum + estimatePromptTokens(item.content), 0);
+    if (currentTokens + toolTokens + 1_024 > maxTotalPromptTokens) throw promptBudgetError();
   }
   return rendered;
+}
+
+function promptBudgetError() {
+  const error = new Error("Required Antigravity prompt does not fit the selected model's input-token budget.");
+  error.name = "PromptBudgetError";
+  error.statusCode = 400;
+  error.code = "prompt_budget_insufficient";
+  return error;
 }
 
 export function createSessionStore({ client, maxSessions, ttlMs, setTimer, clearTimer, createError }) {
@@ -399,6 +434,7 @@ export function createSessionStore({ client, maxSessions, ttlMs, setTimer, clear
         : new Set(),
       hasToolBridge: metadata.hasToolBridge === true,
       baseSignatures: Array.isArray(metadata.baseSignatures) ? [...metadata.baseSignatures] : [],
+      lastAssistantSignature: String(metadata.lastAssistantSignature ?? ""),
       timer: null,
     };
     entry.timer = setTimer(() => void cancelConversation(normalized), ttlMs);

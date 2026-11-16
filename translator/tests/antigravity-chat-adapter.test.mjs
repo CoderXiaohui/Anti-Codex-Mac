@@ -1201,6 +1201,64 @@ test("reuses the same Cascade across same-channel follow-up turns while isolatin
   assert.equal(adapter.conversationCount, 0);
 });
 
+test("reuses a keyed Cascade after history compaction when the latest assistant answer remains", async () => {
+  const starts = [];
+  const followUps = [];
+  const client = {
+    async listModels() {
+      return [{ id: "gemini-pro-agent", displayName: "Gemini Pro" }];
+    },
+    start(request) {
+      starts.push(request);
+      const continuation = {
+        cascadeId: `cascade_${starts.length}`,
+        registeredToolNames: new Set(),
+        retained: true,
+      };
+      return (async function* () {
+        yield { type: "ready" };
+        yield { type: "text_delta", delta: "answer one" };
+        request.onTurnCompleted?.(continuation);
+        yield { type: "done", result: { cascadeId: continuation.cascadeId } };
+      }());
+    },
+    resume(_continuation, _results, request) {
+      return (async function* () {
+        yield { type: "ready" };
+        request.onTurnCompleted?.(_continuation);
+        yield { type: "done", result: { cascadeId: _continuation.cascadeId } };
+      }());
+    },
+    followUp(continuation, request) {
+      followUps.push({ continuation, request });
+      return (async function* () {
+        yield { type: "ready" };
+        yield { type: "text_delta", delta: "answer two" };
+        request.onTurnCompleted?.(continuation);
+        yield { type: "done", result: { cascadeId: continuation.cascadeId } };
+      }());
+    },
+    async cancel() {},
+  };
+  const adapter = createAdapter(client);
+  const options = { conversationKey: "thread_compacted_history" };
+
+  await adapter.complete({ model: "gemini-pro-agent", messages: [
+    { role: "user", content: "first question" },
+  ] }, options);
+  const second = await adapter.complete({ model: "gemini-pro-agent", messages: [
+    { role: "user", content: "Earlier context (summarized): first question" },
+    { role: "assistant", content: "answer one", metadata: { source: "codex" } },
+    { role: "user", content: "follow-up" },
+  ] }, options);
+
+  assert.equal(second.choices[0].message.content, "answer two");
+  assert.equal(starts.length, 1);
+  assert.equal(followUps.length, 1);
+  assert.equal(followUps[0].continuation.cascadeId, "cascade_1");
+  await adapter.close();
+});
+
 function baseBody(overrides = {}) {
   return {
     model: "gemini-pro-agent",

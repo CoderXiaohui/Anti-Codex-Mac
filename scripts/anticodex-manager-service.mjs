@@ -1185,6 +1185,83 @@ function validLoopbackPort(value) {
     return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null;
 }
 
+function trafficEntryTime(entry) {
+    const parsed = Date.parse(String(entry?.lastOutcome?.at || entry?.lastFailure?.at || entry?.lastSuccessAt || ""));
+    return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function trafficFailureMessage(failure) {
+    const statusCode = Number(failure?.statusCode);
+    const category = String(failure?.category || "");
+    if (statusCode === 429 || category === "quota_or_resource_limit") return "上游额度或资源受限";
+    if (statusCode === 401 || statusCode === 403) return "上游账号鉴权失败";
+    if (statusCode >= 500) return "上游服务暂时不可用";
+    if (category === "timeout") return "上游请求超时";
+    return "上游请求失败";
+}
+
+function trafficFailureSuggestion(failure) {
+    const statusCode = Number(failure?.statusCode);
+    const category = String(failure?.category || "");
+    if (statusCode === 429 || category === "quota_or_resource_limit") return "稍后重试，或手动切换到其他可用模型。";
+    if (statusCode === 401 || statusCode === 403) return "请在 Antigravity 中重新登录后再试。";
+    if (statusCode >= 500 || category === "timeout") return "稍后重试；持续失败请检查 Antigravity Desktop。";
+    return "检查请求内容后重试。";
+}
+
+function sanitizeAccountTraffic(rawTraffic, preferredModel = "") {
+    const traffic = rawTraffic && typeof rawTraffic === "object" && !Array.isArray(rawTraffic) ? rawTraffic : {};
+    const byModel = traffic.byModel && typeof traffic.byModel === "object" && !Array.isArray(traffic.byModel) ? traffic.byModel : {};
+    const entries = Object.entries(byModel)
+        .filter(([, entry]) => entry && typeof entry === "object" && !Array.isArray(entry))
+        .map(([model, entry]) => ({ model, entry }));
+    const preferred = preferredModel && byModel[preferredModel] && typeof byModel[preferredModel] === "object"
+        ? byModel[preferredModel]
+        : null;
+    const chosen = preferredModel
+        ? preferred
+        : (entries.slice().sort((left, right) => trafficEntryTime(right.entry) - trafficEntryTime(left.entry))[0]?.entry || null);
+    const lastOutcome = traffic.lastOutcome && typeof traffic.lastOutcome === "object" ? traffic.lastOutcome : (chosen?.lastOutcome || null);
+    const lastFailure = traffic.lastFailure && typeof traffic.lastFailure === "object" ? traffic.lastFailure : (chosen?.lastFailure || null);
+    const declaredState = String(traffic.state || "");
+    const chosenState = String(chosen?.state || "");
+    const state = ["ok", "error"].includes(declaredState)
+        ? declaredState
+        : (["ok", "error"].includes(chosenState) ? chosenState : "unknown");
+    const category = String(lastFailure?.category || "");
+    const statusCode = Number(lastFailure?.statusCode);
+    return {
+        ready: state === "ok" ? true : (state === "error" ? false : null),
+        state,
+        diagnosis: state === "error" ? (category || "upstream_error") : state,
+        message: state === "ok"
+            ? "最近一次对话已成功"
+            : (state === "error" ? trafficFailureMessage(lastFailure) : "尚未验证对话"),
+        model: String(lastFailure?.model || lastOutcome?.model || (preferred ? preferredModel : "") || ""),
+        suggestedAction: state === "error"
+            ? trafficFailureSuggestion(lastFailure)
+            : (state === "unknown" ? "发送一次对话后可确认当前可用性。" : ""),
+        lastSuccessAt: String(traffic.lastSuccessAt || chosen?.lastSuccessAt || ""),
+        lastFailureAt: String(lastFailure?.at || ""),
+        retryable: state === "error" && (statusCode === 429 || statusCode >= 500 || category === "quota_or_resource_limit" || category === "timeout"),
+    };
+}
+
+function accountTrafficHealthFields(traffic, preferredModel = "") {
+    const snapshot = sanitizeAccountTraffic(traffic, preferredModel);
+    return {
+        accountTrafficReady: snapshot.ready,
+        accountTrafficState: snapshot.state,
+        accountTrafficDiagnosis: snapshot.diagnosis,
+        accountTrafficMessage: snapshot.message,
+        accountTrafficModel: snapshot.model,
+        accountTrafficSuggestedAction: snapshot.suggestedAction,
+        accountTrafficLastSuccessAt: snapshot.lastSuccessAt,
+        accountTrafficLastFailureAt: snapshot.lastFailureAt,
+        accountTrafficRetryable: snapshot.retryable,
+    };
+}
+
 function unavailableAccountSnapshot(state = "unavailable", provider = "antigravity") {
     return {
         ok: false,
@@ -1241,6 +1318,7 @@ async function fixedRouteAccountSnapshot(fixedRoute, options = {}) {
             fingerprint,
             planName: String(body?.planName || ""),
             tierName: String(body?.tierName || ""),
+            traffic: body?.traffic && typeof body.traffic === "object" ? body.traffic : null,
         };
     } catch {
         return unavailableAccountSnapshot("adapter_unavailable");
@@ -2047,6 +2125,10 @@ export function createAntiCodexManagerService(options = {}) {
         ? (fixedRoute.relayProtocol === "responses" ? "responses" : "openai-compatible")
         : "";
       const routeReady = fixedRoute.ready === true;
+      const traffic = accountTrafficHealthFields(
+        account.traffic,
+        fixedRoute.provider === "antigravity" ? fixedRoute.model : "",
+      );
       return jsonResponse(res, routeReady ? 200 : 503, {
         schema: "anticodex-manager-service-v1",
         ok: routeReady,
@@ -2065,11 +2147,7 @@ export function createAntiCodexManagerService(options = {}) {
         accountReady: fixedRoute.provider === "antigravity" ? account.signedIn === true && account.identityAvailable === true : null,
         accountMessage: account.message || account.state || "",
         accountState: account.state,
-        accountTrafficReady: null,
-        accountTrafficModel: fixedRoute.provider === "antigravity" ? fixedRoute.model : "",
-        accountTrafficSuggestedAction: fixedRoute.provider === "antigravity"
-          ? "Run a bounded model request to verify current quota."
-          : "",
+        ...traffic,
         fixedRoute,
       }, req);
     }

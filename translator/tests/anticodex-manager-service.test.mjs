@@ -714,6 +714,131 @@ test("Anti-Codex Manager Service API contract and security suite", async (t) => 
     }
   });
 
+  await t.test("GET /health reports real adapter traffic instead of assuming chat readiness", async () => {
+    const fingerprint = `sha256:${"e".repeat(64)}`;
+    let trafficPayload = { byModel: {} };
+    const adapterServer = createServer((req, res) => {
+      if (req.url !== "/v1/account") {
+        res.writeHead(404).end();
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        signedIn: true,
+        identityAvailable: true,
+        fingerprint,
+        planName: "Pro",
+        tierName: "",
+        traffic: trafficPayload,
+      }));
+    });
+    await listenOnLoopback(adapterServer);
+    const adapterPort = adapterServer.address().port;
+    const healthServer = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        ok: true,
+        state: "ready",
+        provider: "antigravity",
+        model: "claude-sonnet-4-6",
+        ports: { adapter: adapterPort },
+      }));
+    });
+    await listenOnLoopback(healthServer);
+    const healthPort = healthServer.address().port;
+    const trafficService = createAntiCodexManagerService({
+      port: 0,
+      host: "127.0.0.1",
+      stateRoot: tempDir,
+      fixedHealthUrl: `http://127.0.0.1:${healthPort}/anticodex/fixed-route/health`,
+    });
+    const trafficServer = await trafficService.listen();
+    const trafficBaseUrl = `http://127.0.0.1:${trafficServer.address().port}`;
+    const readHealth = async () => {
+      const response = await fetch(`${trafficBaseUrl}/health`);
+      assert.equal(response.status, 200);
+      return response.json();
+    };
+    try {
+      const unknown = await readHealth();
+      assert.equal(unknown.accountReady, true);
+      assert.equal(unknown.accountTrafficReady, null);
+      assert.equal(unknown.accountTrafficState, "unknown");
+      assert.equal(unknown.accountTrafficMessage, "尚未验证对话");
+
+      trafficPayload = { byModel: { "another-model": { state: "ok", lastOutcome: { result: "success", model: "another-model", at: "2026-08-01T00:00:00.000Z" } } } };
+      assert.equal((await readHealth()).accountTrafficReady, null, "another model's success cannot verify the selected model");
+
+      trafficPayload = {
+        byModel: {
+          "claude-sonnet-4-6": {
+            state: "ok",
+            lastOutcome: { result: "success", model: "claude-sonnet-4-6", at: "2026-08-01T00:00:00.000Z" },
+            lastSuccessAt: "2026-08-01T00:00:00.000Z",
+          },
+        },
+      };
+      const ok = await readHealth();
+      assert.equal(ok.accountTrafficReady, true);
+      assert.equal(ok.accountTrafficState, "ok");
+      assert.equal(ok.accountTrafficLastSuccessAt, "2026-08-01T00:00:00.000Z");
+
+      trafficPayload = {
+        byModel: {
+          "claude-sonnet-4-6": {
+            state: "error",
+            lastOutcome: { result: "failure", model: "claude-sonnet-4-6", at: "2026-08-02T00:00:00.000Z" },
+            lastFailure: {
+              result: "failure",
+              category: "quota_or_resource_limit",
+              statusCode: 429,
+              code: "rate_limited",
+              model: "claude-sonnet-4-6",
+              at: "2026-08-02T00:00:00.000Z",
+              suggestion: "provider suggestion",
+            },
+          },
+        },
+      };
+      const limited = await readHealth();
+      assert.equal(limited.accountReady, true);
+      assert.equal(limited.accountTrafficReady, false);
+      assert.equal(limited.accountTrafficState, "error");
+      assert.equal(limited.accountTrafficMessage, "上游额度或资源受限");
+      assert.equal(limited.accountTrafficModel, "claude-sonnet-4-6");
+      assert.equal(limited.accountTrafficRetryable, true);
+      assert.equal(limited.accountTrafficSuggestedAction, "稍后重试，或手动切换到其他可用模型。");
+
+      trafficPayload.byModel["claude-sonnet-4-6"] = {
+        ...trafficPayload.byModel["claude-sonnet-4-6"], state: "ok",
+        lastOutcome: { result: "success", model: "claude-sonnet-4-6", at: "2026-08-02T00:01:00.000Z" },
+        lastSuccessAt: "2026-08-02T00:01:00.000Z",
+      };
+      const recovered = await readHealth();
+      assert.equal(recovered.accountTrafficReady, true);
+      assert.equal(recovered.accountTrafficRetryable, false, "a historical failure must not keep a recovered model in retry state");
+
+      trafficPayload = {
+        state: "error",
+        lastFailure: {
+          result: "failure",
+          category: "upstream_error",
+          statusCode: 503,
+          model: "claude-sonnet-4-6",
+          at: "2026-08-03T00:00:00.000Z",
+        },
+      };
+      const upstream = await readHealth();
+      assert.equal(upstream.accountTrafficReady, false);
+      assert.equal(upstream.accountTrafficMessage, "上游服务暂时不可用");
+      assert.equal(upstream.accountTrafficLastFailureAt, "2026-08-03T00:00:00.000Z");
+    } finally {
+      await trafficService.close();
+      await closeServer(healthServer);
+      await closeServer(adapterServer);
+    }
+  });
+
   await t.test("GET /anticodex/manager/bootstrap returns token and actions", async () => {
     // Should fail without Origin/Referer
     const failRes = await fetch(`${baseUrl}/anticodex/manager/bootstrap`);

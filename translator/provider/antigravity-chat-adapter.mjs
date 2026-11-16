@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import {
   DEFAULT_TOOL_CONTINUATION_TIMEOUT_MS,
@@ -32,6 +32,7 @@ export function createAntigravityChatAdapter(options = {}) {
   }
 
   const now = options.now ?? Date.now;
+  const cascadeTraces = new Map();
   const idFactory = options.idFactory ?? (() => `chatcmpl_${randomUUID().replaceAll("-", "")}`);
   const readNativeCustomInstructions = typeof options.nativeCustomInstructions === "function"
     ? options.nativeCustomInstructions
@@ -44,6 +45,28 @@ export function createAntigravityChatAdapter(options = {}) {
     clearTimer: options.clearTimer ?? clearTimeout,
     createError: (msg, opts) => new ChatAdapterError(msg, opts),
   });
+
+  function recordCascadeTrace({ conversationKey, cascadeId, action, reason, model }) {
+    const normalizedCascadeId = String(cascadeId ?? "").trim();
+    if (!normalizedCascadeId) return null;
+    const key = String(conversationKey ?? "").trim();
+    const sessionKeyHash = key
+      ? createHash("sha256").update(key).digest("hex").slice(0, 16)
+      : "";
+    const traceKey = sessionKeyHash || `${String(model ?? "unknown")}:unkeyed`;
+    const trace = {
+      cascadeId: normalizedCascadeId,
+      sessionKeyHash,
+      action: String(action ?? "start"),
+      reason: String(reason ?? "unknown"),
+      model: String(model ?? "unknown").slice(0, 128),
+      at: new Date(now()).toISOString(),
+    };
+    cascadeTraces.delete(traceKey);
+    cascadeTraces.set(traceKey, trace);
+    while (cascadeTraces.size > 32) cascadeTraces.delete(cascadeTraces.keys().next().value);
+    return trace;
+  }
 
   async function account(requestOptions = {}) {
     if (typeof client.getReadiness !== "function") {
@@ -109,6 +132,14 @@ export function createAntigravityChatAdapter(options = {}) {
     let terminal = false;
     let roleSent = false;
     let nativeHelperText = "";
+    let assistantText = "";
+    let assistantMessage = null;
+    let tracedCascadeId = "";
+    const traceAction = prepared.kind === "follow_up" ? "follow_up"
+      : prepared.kind === "resume" ? "resume"
+        : "start";
+    const traceReason = prepared.reason
+      ?? (prepared.kind === "follow_up" ? "history_matched" : "no_existing_continuation");
     const resumedByOwner = prepared.kind === "resume" && prepared.claimMode === "owner";
     const replayedResume = prepared.kind === "resume" && !resumedByOwner;
     const retainConversation = Boolean(prepared.conversationKey)
@@ -130,6 +161,14 @@ export function createAntigravityChatAdapter(options = {}) {
       let events;
       if (prepared.kind === "resume") {
         continuation = prepared.record.continuation;
+        tracedCascadeId = String(continuation?.cascadeId ?? "");
+        recordCascadeTrace({
+          conversationKey: prepared.conversationKey,
+          cascadeId: tracedCascadeId,
+          action: traceAction,
+          reason: traceReason,
+          model,
+        });
         events = resumedByOwner
           ? client.resume(continuation, prepared.results, {
             model,
@@ -140,6 +179,14 @@ export function createAntigravityChatAdapter(options = {}) {
           : sessions.replay(prepared.record);
       } else if (prepared.kind === "follow_up") {
         continuation = prepared.continuation;
+        tracedCascadeId = String(continuation?.cascadeId ?? "");
+        recordCascadeTrace({
+          conversationKey: prepared.conversationKey,
+          cascadeId: tracedCascadeId,
+          action: traceAction,
+          reason: traceReason,
+          model,
+        });
         events = client.followUp(continuation, {
           model,
           userText: prepared.userText,
@@ -160,6 +207,16 @@ export function createAntigravityChatAdapter(options = {}) {
           parallelToolCalls: prepared.parallelToolCalls,
           reasoningEffort: prepared.reasoningEffort,
           ...(retainConversation ? { retainConversation: true, onTurnCompleted } : {}),
+          onCascadeCreated: (createdContinuation) => {
+            tracedCascadeId = String(createdContinuation?.cascadeId ?? "");
+            recordCascadeTrace({
+              conversationKey: prepared.conversationKey,
+              cascadeId: tracedCascadeId,
+              action: traceAction,
+              reason: traceReason,
+              model,
+            });
+          },
           signal,
         });
       }
@@ -181,6 +238,10 @@ export function createAntigravityChatAdapter(options = {}) {
         }
         if (event?.type === "text_delta") {
           const delta = String(event.delta ?? "");
+          if (delta && !prepared.nativeHelperKind) {
+            assistantText += delta;
+            assistantMessage = { role: "assistant", content: assistantText };
+          }
           if (delta && !roleSent) {
             roleSent = true;
             yield chunk(base, { role: "assistant" }, null);
@@ -207,6 +268,23 @@ export function createAntigravityChatAdapter(options = {}) {
             });
           }
           const calls = normalizeCascadeCalls(event.calls);
+          assistantMessage = {
+            role: "assistant",
+            content: null,
+            tool_calls: calls.map((call) => ({
+              id: call.callId,
+              type: "function",
+              function: { name: call.name, arguments: call.argumentsJson },
+            })),
+          };
+          tracedCascadeId = String(continuation.cascadeId ?? tracedCascadeId);
+          recordCascadeTrace({
+            conversationKey: prepared.conversationKey,
+            cascadeId: tracedCascadeId,
+            action: traceAction,
+            reason: traceReason,
+            model,
+          });
           if (!replayedResume) {
             await sessions.put(continuation, calls, {
               replacingRecord: resumedByOwner ? prepared.record : null,
@@ -239,6 +317,14 @@ export function createAntigravityChatAdapter(options = {}) {
           return;
         }
         if (event?.type === "done") {
+          tracedCascadeId = String(event.result?.cascadeId ?? continuation?.cascadeId ?? tracedCascadeId);
+          recordCascadeTrace({
+            conversationKey: prepared.conversationKey,
+            cascadeId: tracedCascadeId,
+            action: traceAction,
+            reason: traceReason,
+            model,
+          });
           const retainedTarget = completedContinuation
             ?? (retainConversation && continuation?.retained ? continuation : null);
           if (retainConversation && retainedTarget) {
@@ -248,6 +334,7 @@ export function createAntigravityChatAdapter(options = {}) {
                 : prepared.registeredToolNames,
               hasToolBridge: prepared.hasToolBridge,
               baseSignatures: prepared.baseSignatures,
+              lastAssistantSignature: assistantMessage ? messageSignature(assistantMessage) : "",
             });
           }
           if (resumedByOwner) sessions.complete(prepared.record, replayEvents);
@@ -339,6 +426,9 @@ export function createAntigravityChatAdapter(options = {}) {
     get conversationCount() {
       return sessions.conversationSize;
     },
+    getDiagnostics() {
+      return { cascadeTrace: [...cascadeTraces.values()].map((trace) => ({ ...trace })) };
+    },
   };
 }
 
@@ -377,6 +467,7 @@ function prepareChatRequest(body, sessions, nativeCustomInstructions, conversati
           nativeCustomInstructions,
           effectiveKey,
         ),
+        reason: "new_tools_detected",
         staleRecord: peeked,
         staleContinuation: staleConv?.continuation ?? null,
       };
@@ -387,6 +478,7 @@ function prepareChatRequest(body, sessions, nativeCustomInstructions, conversati
     if (claim) {
       return {
         kind: "resume",
+        reason: "tool_results_resume",
         model,
         record: claim.record,
         claimMode: claim.mode,
@@ -419,6 +511,7 @@ function prepareChatRequest(body, sessions, nativeCustomInstructions, conversati
         nativeCustomInstructions,
         effectiveKey,
       ),
+      reason: "pending_continuation_missing",
       staleContinuation: staleConv?.continuation ?? null,
     };
   }
@@ -497,6 +590,7 @@ function prepareChatRequest(body, sessions, nativeCustomInstructions, conversati
       if (matched) {
         return {
           kind: "follow_up",
+          reason: "history_matched",
           model,
           continuation: matched.entry.continuation,
           registeredToolNames: matched.entry.registeredToolNames,
@@ -516,10 +610,12 @@ function prepareChatRequest(body, sessions, nativeCustomInstructions, conversati
           history,
           userItems: userContent.items,
           structuredOutput,
+          allowCompactedHistory: true,
         });
         if (followUpItems) {
           return {
             kind: "follow_up",
+            reason: "history_matched",
             model,
             continuation: existingConversation.continuation,
             registeredToolNames: existingConversation.registeredToolNames,
@@ -558,6 +654,11 @@ function prepareChatRequest(body, sessions, nativeCustomInstructions, conversati
     conversationKey: effectiveConversationKey,
     baseSignatures: nextBaseSignatures,
     staleContinuation,
+    reason: staleContinuation
+      ? "history_mismatch"
+      : effectiveConversationKey
+        ? "no_existing_continuation"
+        : "no_conversation_key",
     toolChoice: nativeTextOnlyHelper ? "none" : normalizeToolChoice(body.tool_choice),
     parallelToolCalls: nativeTextOnlyHelper ? false : body.parallel_tool_calls !== false,
     reasoningEffort: String(body.reasoning_effort ?? body.reasoning?.effort ?? "").trim(),
@@ -767,6 +868,7 @@ function prepareRestartContinuation(body, messages, model, tools, nativeCustomIn
     hasToolBridge: tools.length > 0,
     conversationKey: effectiveKey,
     baseSignatures: effectiveKey ? history.map(messageSignature) : null,
+    reason: "new_tools_detected",
     toolChoice: normalizeToolChoice(body.tool_choice),
     parallelToolCalls: body.parallel_tool_calls !== false,
     reasoningEffort: String(body.reasoning_effort ?? body.reasoning?.effort ?? "").trim(),
@@ -1072,6 +1174,14 @@ export function mapAntigravityError(error) {
   if (error instanceof ChatAdapterError) return error;
   const message = String(error?.message ?? error ?? "Antigravity request failed.");
   const statusCode = Number(error?.statusCode ?? error?.status ?? 0);
+  if (error?.code === "prompt_budget_insufficient") {
+    return new ChatAdapterError(message, {
+      cause: error,
+      statusCode: 400,
+      code: "prompt_budget_insufficient",
+      type: "invalid_request_error",
+    });
+  }
   if (statusCode === 401 || statusCode === 403 || /(?:login|sign[ -]?in|unauthori[sz]ed|forbidden)/i.test(message)) {
     return new ChatAdapterError(message, { cause: error, statusCode: 401, code: "authentication_error" });
   }

@@ -170,6 +170,7 @@ export function createAntigravityCascadeClient(options = {}) {
         seenToolEvents: new Set(),
         retained: false,
       };
+      try { request.onCascadeCreated?.(continuation); } catch {}
       await sendCascadeTurnMessage(
         activeConnection,
         cascadeId,

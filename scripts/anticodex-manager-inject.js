@@ -1,5 +1,5 @@
 (() => {
-  const VERSION = "native-panel-v121";
+  const VERSION = "native-panel-v122";
   const SUMMARY_VERSION = "latest-reports-evidence-v5";
   const MANAGER_ID = "anticodex-manager-overlay";
   const LEGACY_BUTTON_ID = "anticodex-manager-button";
@@ -965,6 +965,7 @@
 
   function isQuotaLimitTraffic(health) {
     return trafficDiagnosis(health) === "quota_or_limit_reached"
+      || trafficDiagnosis(health) === "quota_or_resource_limit"
       || String(health?.accountTrafficType || "") === "antigravity_quota_exceeded";
   }
 
@@ -976,7 +977,7 @@
 
   function trafficNoticeKey(health) {
     const diagnosis = trafficDiagnosis(health);
-    if (isQuotaLimitTraffic(health)) return "quota_or_limit_reached";
+    if (isQuotaLimitTraffic(health)) return diagnosis === "quota_or_resource_limit" ? "quota_or_resource_limit" : "quota_or_limit_reached";
     if (diagnosis === "account_verification_required" || diagnosis === "account_verification_with_missing_token") return diagnosis;
     if (diagnosis === "antigravity_account_unavailable") return diagnosis;
     if (health?.accountTrafficRetryable === true || diagnosis === "antigravity_temporarily_unavailable") {
@@ -1011,6 +1012,7 @@
     const quotaModel = String(health?.accountTrafficModel || "").trim();
     const copy = {
       quota_or_limit_reached: [quotaModel ? `${quotaModel} \u989d\u5ea6\u5df2\u5230` : "Antigravity \u6a21\u578b\u989d\u5ea6\u5df2\u5230", quotaModel ? "\u8bf7\u5207\u6362\u5230\u4ecd\u6709\u989d\u5ea6\u7684\u6a21\u578b\uff0c\u6216\u7b49\u5f85\u8be5\u6a21\u578b\u989d\u5ea6\u6062\u590d\u3002" : "\u8bf7\u5207\u6362\u5230\u4ecd\u6709\u989d\u5ea6\u7684\u6a21\u578b\uff0c\u6216\u7b49\u5f85\u989d\u5ea6\u6062\u590d\u540e\u91cd\u8bd5\u3002"],
+      quota_or_resource_limit: [quotaModel ? `${quotaModel} \u4e0a\u6e38\u989d\u5ea6\u6216\u8d44\u6e90\u53d7\u9650` : "\u4e0a\u6e38\u989d\u5ea6\u6216\u8d44\u6e90\u53d7\u9650", "\u4e0d\u4e00\u5b9a\u662f\u989d\u5ea6\u8017\u5c3d\uff1b\u7a0d\u540e\u91cd\u8bd5\uff0c\u6216\u624b\u52a8\u5207\u6362\u5230\u5176\u4ed6\u53ef\u7528\u6a21\u578b\u3002"],
       account_verification_required: ["Antigravity \u9700\u8981\u8d26\u53f7\u9a8c\u8bc1", "\u8bf7\u5728 Antigravity \u684c\u9762\u7aef\u5b8c\u6210\u9a8c\u8bc1\u3002"],
       account_verification_with_missing_token: ["Antigravity \u9a8c\u8bc1\u5c1a\u672a\u751f\u6548", "\u5b8c\u6210\u9a8c\u8bc1\u540e\uff0c\u8bf7\u7a0d\u7b49\u6216\u91cd\u65b0\u6253\u5f00 Antigravity\u3002"],
       antigravity_account_unavailable: ["Antigravity \u8d26\u53f7\u4e0d\u53ef\u7528", "\u8bf7\u68c0\u67e5 Antigravity \u662f\u5426\u5df2\u767b\u5f55\u3002"],
@@ -1121,8 +1123,11 @@
 
   function quotaLimitNotice(health) {
     if (!isQuotaLimitTraffic(health)) return null;
+    const resourceLimited = trafficDiagnosis(health) === "quota_or_resource_limit";
     return card("\u8d26\u53f7\u9650\u989d\u63d0\u9192", el("div", { className: "anticodex-result anticodex-warn", text: [
-      "Antigravity \u5f53\u524d\u8d26\u53f7\u53ef\u80fd\u5df2\u5230\u989d\u5ea6/\u9650\u989d\u3002",
+      resourceLimited
+        ? "\u4e0a\u6e38\u8fd4\u56de\u989d\u5ea6\u6216\u8d44\u6e90\u53d7\u9650\uff0c\u4e0d\u4e00\u5b9a\u662f\u989d\u5ea6\u8017\u5c3d\u3002"
+        : "Antigravity \u5f53\u524d\u8d26\u53f7\u53ef\u80fd\u5df2\u5230\u989d\u5ea6/\u9650\u989d\u3002",
       health?.accountTrafficSuggestedAction || "\u8bf7\u5207\u6362 Antigravity \u8d26\u53f7\uff0c\u6216\u7b49\u5f85\u989d\u5ea6\u6062\u590d\u540e\u91cd\u8bd5\u3002",
       "Anti-Codex \u4e0d\u4f1a\u5207\u5230 ChatGPT \u767b\u5f55\uff0c\u4e5f\u4e0d\u4f1a\u6539\u7528 GPT \u6a21\u578b\u3002",
     ].join("\n") }));
@@ -1150,9 +1155,11 @@
   async function refreshManagerStatus() {
     const manager = document.getElementById(MANAGER_ID);
     const promptEditorOpen = manager?.getAttribute("data-anticodex-manager-view") === "prompts";
+    const upstreamConfigOpen = manager?.querySelector(".anticodex-result-card")?.getAttribute("data-anticodex-result-mode") === "upstream-config";
     const busy = manager?.getAttribute("data-anticodex-busy") === "true"
       || manager?.querySelector(".anticodex-actions")?.getAttribute("data-anticodex-busy") === "true";
     if (promptEditorOpen) return;
+    if (upstreamConfigOpen) return;
     if (busy) return;
     try {
       const healthResult = await safeJson("/health");
@@ -2060,6 +2067,7 @@
 
     async function load(options = {}) {
       if (managerView !== "status") return;
+      if (resultCard.getAttribute("data-anticodex-result-mode") === "upstream-config") return;
       setResultCardMode("status");
       const updateResult = options.updateResult !== false;
       const loadGeneration = actionGeneration;
@@ -2137,6 +2145,16 @@
           : (snapshotStatus.state === "unverified" || snapshotStatus.state === "check_failed"
               ? "\u8bf7\u70b9\u201c\u5237\u65b0\u72b6\u6001\u201d\u6838\u5bf9\u5f53\u524d\u539f\u751f Codex"
               : (snapshotStatus.stale ? "\u5feb\u7167\u5df2\u8fc7\u671f\u6216\u7f3a\u5931\uff0c\u8bf7\u70b9\u201c\u5237\u65b0\u672c\u5730\u529f\u80fd\u201d" : "\u5f53\u524d\u65e0\u9700\u5237\u65b0"));
+        const snapshotStale = snapshotStatus.stale === true
+          || ["stale", "invalid", "missing", "unverified", "check_failed"].includes(String(snapshotStatus.state || ""));
+        const snapshotAgeRounded = Number.isFinite(Number(snapshotStatus.ageHours)) ? Math.round(Number(snapshotStatus.ageHours)) : null;
+        const snapshotRows = snapshotStale
+          ? [["\u5feb\u7167", `\u672c\u5730\u529f\u80fd\u5feb\u7167\u4e0d\u53ef\u7528\uff08${snapshotStateText}${snapshotAgeRounded !== null ? `\uff0c\u5df2\u7528 ${snapshotAgeRounded} \u5c0f\u65f6` : ""}\uff09\uff0c\u8bf7\u70b9\u201c\u5237\u65b0\u672c\u5730\u529f\u80fd\u201d\u540e\u91cd\u8bd5\u3002`]]
+          : [
+              ["\u5feb\u7167", `\u8fde\u63a5\u5668 ${localFeatures.snapshots?.connectorDirectoryFiles ?? "\u672a\u77e5"} / \u5e94\u7528\u5de5\u5177 ${localFeatures.snapshots?.appToolsCacheFiles ?? "\u672a\u77e5"}`],
+              ["\u5feb\u7167\u65b0\u9c9c\u5ea6", `${snapshotStateText} / \u5df2\u7528 ${snapshotAgeText} / \u4e0a\u9650 ${snapshotStatus.maxAgeHours ?? 24} \u5c0f\u65f6`],
+              ["\u5237\u65b0\u65b9\u5f0f", snapshotRefreshText],
+            ];
         const modelList = Array.isArray(models?.data) ? models.data : [];
         const modelText = modelList.map((model) => {
           const id = String(model?.id || "");
@@ -2159,9 +2177,9 @@
           card("\u8fd0\u884c\u72b6\u6001", kv([
             ["\u4e0a\u6e38", health?.upstream],
             ["\u6a21\u578b\u901a\u9053", usingThirdParty ? ((upstreamProfile.runtime?.protocol || "third-party") + " / " + (upstreamProfile.runtime?.model || "\u672a\u77e5")) : "Antigravity"],
-            [usingThirdParty ? "\u63a5\u53e3\u72b6\u6001" : "Antigravity", usingThirdParty ? "\u5df2\u914d\u7f6e" : (health?.accountReady ? "\u5df2\u5c31\u7eea" : health?.accountState)],
+            [usingThirdParty ? "\u63a5\u53e3\u72b6\u6001" : "Antigravity 登录", usingThirdParty ? "\u5df2\u914d\u7f6e" : (health?.accountReady ? "已登录" : "登录不可用")],
             ...(usingThirdParty ? [["\u80fd\u529b\u8bc1\u636e", upstreamCapabilitySummary(upstreamProfile, health)]] : []),
-            ["\u6d41\u91cf", usingThirdParty ? "\u7b2c\u4e09\u65b9 API" : (health?.accountTrafficReady === true ? "\u5df2\u5c31\u7eea" : (health?.accountTrafficReady === false ? trafficDiagnosis(health) : "\u672a\u68c0\u67e5"))],
+            ["\u6d41\u91cf", usingThirdParty ? "\u7b2c\u4e09\u65b9 API" : (health?.accountTrafficReady === true ? "\u5df2\u5c31\u7eea" : (health?.accountTrafficMessage || (health?.accountTrafficReady === false ? "\u4e0a\u6e38\u8bf7\u6c42\u5931\u8d25" : "\u5c1a\u672a\u9a8c\u8bc1\u5bf9\u8bdd")))],
             ...(usingThirdParty ? [] : [["\u53d7\u9650\u6a21\u578b", health?.accountTrafficModel || "\u65e0"]]),
             ["\u5efa\u8bae", usingThirdParty ? "\u63a5\u53e3\u5931\u8d25\u65f6\u4e0d\u4f1a\u81ea\u52a8\u5207\u56de Antigravity" : (health?.accountTrafficSuggestedAction || "\u6682\u65e0")],
             ["\u6a21\u578b\u6570", modelList.length],
@@ -2201,9 +2219,7 @@
             ["\u8fdc\u7a0b\u5df2\u6388\u6743", accessibleConnectors],
             ["\u672c\u5730\u7f13\u5b58\u9884\u89c8", allowlist?.counts?.localAllowlisted ?? allowlist?.counts?.locallyAuthorized ?? 0],
             ["\u771f\u5b9e\u53ef\u8c03\u7528\u5e94\u7528\u5de5\u5177", callableAppToolCount],
-            ["\u5feb\u7167", `\u8fde\u63a5\u5668 ${localFeatures.snapshots?.connectorDirectoryFiles ?? "\u672a\u77e5"} / \u5e94\u7528\u5de5\u5177 ${localFeatures.snapshots?.appToolsCacheFiles ?? "\u672a\u77e5"}`],
-            ["\u5feb\u7167\u65b0\u9c9c\u5ea6", `${snapshotStateText} / \u5df2\u7528 ${snapshotAgeText} / \u4e0a\u9650 ${snapshotStatus.maxAgeHours ?? 24} \u5c0f\u65f6`],
-            ["\u5237\u65b0\u65b9\u5f0f", snapshotRefreshText],
+            ...snapshotRows,
             ["\u53ef\u8c03\u7528\u72b6\u6001", accessibleConnectors > 0 ? "\u4ec5\u663e\u793a\u771f\u5b9e\u6388\u6743\u540e\u53ef\u8c03\u7528\u7684\u5e94\u7528\u5de5\u5177" : "\u672a\u6388\u6743\u8fde\u63a5\u5668\u4e0d\u4f2a\u88c5\u6210\u53ef\u8c03\u7528\u5de5\u5177"],
             ["\u8bf4\u660e", "Skill \u662f\u672c\u5730\u6307\u4ee4\uff1bMCP \u5fc5\u987b\u7531\u5f53\u524d\u4f1a\u8bdd\u771f\u5b9e\u66b4\u9732\u5de5\u5177\uff1b\u63d2\u4ef6/\u8fde\u63a5\u5668\u76ee\u5f55\u4e0d\u4ee3\u8868\u53ef\u8c03\u7528\uff1b\u672c\u5730\u7f13\u5b58\u9884\u89c8\u4e0d\u6388\u6743\u3002"],
             ["\u7ee7\u627f\u72b6\u6001", localFeatures.skills?.requiredPresent?.length ? `\u5df2\u7ee7\u627f ${localFeatures.skills.requiredPresent.join(", ")}` : "\u53ef\u901a\u8fc7\u6309\u94ae\u68c0\u67e5\u548c\u5237\u65b0"],
