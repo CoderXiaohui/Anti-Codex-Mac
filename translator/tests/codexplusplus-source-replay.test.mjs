@@ -19,11 +19,12 @@ test("current promotion targets the reviewed upstream tag and manifest patch set
   assert.equal(accepted.version, "2.6.7");
   assert.equal(accepted.tag, "v2.6.7");
   assert.equal(accepted.upstreamCommit, "e63ff6c98be7b79b1d8a5983b541ea2bd6cafcfd");
-  assert.equal(accepted.patchCommit, "b1b6d0dffc784529af9116b83482605a0b608297");
+  assert.equal(accepted.patchCommit, "9d0bddd316defbf8417ce29c1eece321fe1ebaaa");
   assert.deepEqual(accepted.patches.map(({ file }) => file), [
     "candidates/v2.6.7/patches/0021-v267-format-normalization.patch",
     "candidates/v2.6.7/patches/0022-v267-integration.patch",
     "candidates/v2.6.7/patches/0023-v267-provider-affinity.patch",
+    "candidates/v2.6.7/patches/0024-v267-antigravity-turn-id-affinity.patch",
   ]);
   assert.equal(patchManifest.patches.length, accepted.patches.length);
   for (const patch of patchManifest.patches) {
@@ -34,7 +35,7 @@ test("current promotion targets the reviewed upstream tag and manifest patch set
       patch.file,
     );
   }
-  assert.match(accepted.verification.patchReplay, /3 project patches/);
+  assert.match(accepted.verification.patchReplay, /4 project patches/);
   assert.match(accepted.verification.patchReplay, new RegExp(accepted.patchCommit));
   assert.match(accepted.verification.patchReplay, /tree [0-9a-f]{40}$/);
   assert.match(accepted.verification.launcherReleaseBuild, /^sha256:[0-9a-f]{64}$/);

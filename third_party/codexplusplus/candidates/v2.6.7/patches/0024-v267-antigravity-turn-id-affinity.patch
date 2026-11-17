@@ -1,0 +1,248 @@
+diff --git a/crates/codex-plus-core/src/protocol_proxy.rs b/crates/codex-plus-core/src/protocol_proxy.rs
+index 4c47a4a..75a8bc2 100644
+--- a/crates/codex-plus-core/src/protocol_proxy.rs
++++ b/crates/codex-plus-core/src/protocol_proxy.rs
+@@ -28,6 +28,7 @@ use anticodex::{
+ pub(crate) use response_history_sse::HistoryResponsesSseObserver;
+ 
+ pub const DEFAULT_PROTOCOL_PROXY_PORT: u16 = 57321;
++const ANTICODEX_TURN_ID_HEADER: &str = "x-anticodex-turn-id";
+ 
+ /// 工具调用上需要跨 turn 原样带回的供应商附带数据，按 `call_id` 索引。
+ ///
+@@ -2002,6 +2003,48 @@ mod anticodex_session_header_tests {
+             headers.turn_metadata
+         ));
+     }
++
++    #[test]
++    fn anticodex_turn_affinity_is_uuid_validated_and_scoped_to_managed_loopback_chat() {
++        let valid_turn_id = "550e8400-e29b-41d4-a716-446655440000";
++        let metadata = json!({ "turn_id": valid_turn_id }).to_string();
++        let request = Value::Null;
++        let managed_relay = crate::settings::RelayProfile {
++            id: anticodex::ANTICODEX_ANTIGRAVITY_RELAY_ID.to_string(),
++            base_url: "http://127.0.0.1:18488/v1".to_string(),
++            protocol: RelayProtocol::ChatCompletions,
++            ..crate::settings::RelayProfile::default()
++        };
++        let endpoint = chat_completions_url(&managed_relay.base_url);
++
++        assert_eq!(
++            antigravity_turn_id_header_value(&request, Some(&metadata)).as_deref(),
++            Some(valid_turn_id)
++        );
++        assert!(is_managed_antigravity_chat_endpoint(
++            &managed_relay,
++            &endpoint
++        ));
++        assert!(!is_managed_antigravity_chat_endpoint(
++            &managed_relay,
++            "https://api.example.test/v1/chat/completions"
++        ));
++
++        let third_party = crate::settings::RelayProfile {
++            id: anticodex::ANTICODEX_THIRD_PARTY_RELAY_ID.to_string(),
++            ..managed_relay.clone()
++        };
++        assert!(!is_managed_antigravity_chat_endpoint(
++            &third_party,
++            &endpoint
++        ));
++
++        let invalid_metadata = json!({ "turn_id": "not-a-uuid" }).to_string();
++        assert_eq!(
++            antigravity_turn_id_header_value(&request, Some(&invalid_metadata)),
++            None
++        );
++    }
+ }
+ 
+ /// Codex 经网关时原样透传给上游的客户端身份 / 会话头（#2783）。
+@@ -6708,7 +6751,7 @@ fn build_responses_upstream_request(
+         upstream_body,
+         official_credential,
+     );
+-    builder = with_client_session_headers(builder, relay, session_headers);
++    builder = with_client_session_headers(builder, relay, session_headers, endpoint, upstream_body);
+     // 转给 Codex++ 自己的本机网关时打上标记：这一层已经跑过拓展的网关中间件，网关那层不再跑一遍。
+     // 只发往本机回环地址，外部中转站看不到这个头。
+     if is_local_protocol_proxy_base_url(endpoint) {
+@@ -6872,6 +6915,8 @@ fn with_client_session_headers(
+     mut builder: reqwest::RequestBuilder,
+     relay: &crate::settings::RelayProfile,
+     headers: ProxySessionHeaders<'_>,
++    endpoint: &str,
++    request_body: &Value,
+ ) -> reqwest::RequestBuilder {
+     for (name, value) in [
+         ("session-id", headers.session_id),
+@@ -6893,9 +6938,57 @@ fn with_client_session_headers(
+             builder = builder.header(name, value);
+         }
+     }
++    if is_managed_antigravity_chat_endpoint(relay, endpoint) {
++        if let Some(turn_id) = antigravity_turn_id_header_value(request_body, headers.turn_metadata)
++        {
++            builder = builder.header(ANTICODEX_TURN_ID_HEADER, turn_id);
++        }
++    }
+     builder
+ }
+ 
++fn is_managed_antigravity_chat_endpoint(
++    relay: &crate::settings::RelayProfile,
++    endpoint: &str,
++) -> bool {
++    if relay.id != anticodex::ANTICODEX_ANTIGRAVITY_RELAY_ID
++        || relay.protocol != RelayProtocol::ChatCompletions
++    {
++        return false;
++    }
++    let Ok(url) = reqwest::Url::parse(endpoint) else {
++        return false;
++    };
++    if !url.scheme().eq_ignore_ascii_case("http")
++        || !url
++            .path()
++            .trim_end_matches('/')
++            .ends_with("/chat/completions")
++        || !url.username().is_empty()
++        || url.password().is_some()
++    {
++        return false;
++    }
++    let Some(host) = url.host_str() else {
++        return false;
++    };
++    host.eq_ignore_ascii_case("localhost")
++        || host
++            .parse::<std::net::IpAddr>()
++            .is_ok_and(|address| address.is_loopback())
++}
++
++fn antigravity_turn_id_header_value(
++    request_body: &Value,
++    turn_metadata: Option<&str>,
++) -> Option<String> {
++    let metadata = anticodex::codex_turn_metadata_value(request_body, turn_metadata)?;
++    let turn_id = metadata.get("turn_id")?.as_str()?.trim();
++    uuid::Uuid::parse_str(turn_id)
++        .ok()
++        .map(|value| value.to_string())
++}
++
+ fn conversation_id_from_responses_request(body: &Value) -> Option<String> {
+     for key in ["conversation", "conversation_id", "previous_response_id"] {
+         if let Some(value) = body.get(key).and_then(Value::as_str) {
+diff --git a/crates/codex-plus-core/src/relay_headers.rs b/crates/codex-plus-core/src/relay_headers.rs
+index 2c60457..01d4c91 100644
+--- a/crates/codex-plus-core/src/relay_headers.rs
++++ b/crates/codex-plus-core/src/relay_headers.rs
+@@ -97,7 +97,7 @@ pub fn apply_headers(
+ ) -> RequestBuilder {
+     for header in headers {
+         let key = header.key.trim();
+-        if key.is_empty() || is_forbidden(key) {
++        if key.is_empty() || is_forbidden(key) || key.eq_ignore_ascii_case("x-anticodex-turn-id") {
+             continue;
+         }
+         let Ok(name) = HeaderName::from_bytes(key.as_bytes()) else {
+@@ -334,4 +334,14 @@ mod tests {
+         assert!(request.headers().get("host").is_none());
+         assert_eq!(request.headers().get("x-ok").unwrap(), "1");
+     }
++
++    #[test]
++    fn anticodex_turn_affinity_header_cannot_be_supplied_as_a_custom_header() {
++        let profile = profile_with(vec![header(
++            "X-AntiCodex-Turn-Id",
++            "not-from-turn-metadata",
++        )]);
++        let request = build(&profile);
++        assert!(request.headers().get("x-anticodex-turn-id").is_none());
++    }
+ }
+diff --git a/crates/codex-plus-core/tests/all/protocol_proxy.rs b/crates/codex-plus-core/tests/all/protocol_proxy.rs
+index 3457dbe..616c420 100644
+--- a/crates/codex-plus-core/tests/all/protocol_proxy.rs
++++ b/crates/codex-plus-core/tests/all/protocol_proxy.rs
+@@ -6865,6 +6865,78 @@ async fn responses_proxy_preserves_session_headers_through_both_protocols() {
+     }
+ }
+ 
++#[tokio::test]
++async fn antigravity_turn_affinity_header_is_local_and_uuid_validated() {
++    let valid_turn_id = "550e8400-e29b-41d4-a716-446655440000";
++    let cases = [
++        (
++            "anticodex-antigravity",
++            valid_turn_id,
++            Some(valid_turn_id),
++            true,
++        ),
++        ("anticodex-antigravity", "not-a-uuid", None, true),
++        ("anticodex-third-party", valid_turn_id, None, false),
++    ];
++
++    for (relay_id, turn_id, expected_turn_id, spoof_custom_header) in cases {
++        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
++            .await
++            .unwrap();
++        let address = listener.local_addr().unwrap();
++        let server = tokio::spawn(capture_request_with_response(
++            listener,
++            "application/json",
++            "{}".to_string(),
++        ));
++        let mut settings = session_header_settings(
++            RelayProtocol::ChatCompletions,
++            format!("http://{address}/v1"),
++        );
++        settings.active_relay_id = relay_id.to_string();
++        settings.relay_profiles[0].id = relay_id.to_string();
++        if spoof_custom_header {
++            settings.relay_profiles[0].custom_headers =
++                vec![codex_plus_core::settings::RelayHeaderKeyValue {
++                    key: "X-AntiCodex-Turn-Id".to_string(),
++                    value: "not-from-turn-metadata".to_string(),
++                }];
++        }
++        let metadata = json!({ "turn_id": turn_id }).to_string();
++        let result = open_responses_proxy_request_with_settings_for_path_and_session_headers(
++            r#"{"model":"session-probe","input":"hello","stream":false}"#,
++            settings,
++            "/v1/responses",
++            None,
++            ProxySessionHeaders {
++                authorization: None,
++                turn_metadata: Some(&metadata),
++                session_id: None,
++                thread_id: Some("thread-preserved"),
++                opencode_session: None,
++                client_identity: &[],
++            },
++        )
++        .await
++        .unwrap();
++        assert_eq!(result.status_code, 200);
++        let (headers, _) = server.await.unwrap();
++        assert_eq!(
++            captured_header_values(&headers, "thread-id"),
++            vec!["thread-preserved"]
++        );
++        let turn_headers = captured_header_values(&headers, "x-anticodex-turn-id");
++        match expected_turn_id {
++            Some(expected) => assert_eq!(turn_headers, vec![expected]),
++            None => assert!(
++                turn_headers.is_empty(),
++                "unexpected turn id header: {turn_headers:?}"
++            ),
++        }
++        assert!(captured_header_values(&headers, "x-codex-turn-metadata").is_empty());
++    }
++}
++
+ #[tokio::test]
+ async fn responses_proxy_session_headers_keep_custom_headers_authoritative() {
+     for protocol in [RelayProtocol::Responses, RelayProtocol::ChatCompletions] {

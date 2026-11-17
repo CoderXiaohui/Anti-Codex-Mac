@@ -9,6 +9,8 @@ export const THIRD_PARTY_MODEL_SLOT = "anticodex/third-party";
 export const THIRD_PARTY_MODEL_PREFIX = `${THIRD_PARTY_MODEL_SLOT}/`;
 const DEFAULT_THIRD_PARTY_CONTEXT_WINDOW = 272_000;
 const THIRD_PARTY_AUTO_COMPACT_PERCENT = 90;
+// Allow the proxy header wait (120s), native turn (300s) and terminal error delivery (30s).
+const PROXY_STREAM_IDLE_TIMEOUT_MS = (120 + 300 + 30) * 1000;
 
 export function thirdPartyNativeModel(model) {
   const value = String(model ?? "").trim();
@@ -113,6 +115,7 @@ export function generateRouteConfig(options = {}) {
     `name = ${tomlString(profileName)}`,
     "wire_api = \"responses\"",
     "requires_openai_auth = true",
+    `stream_idle_timeout_ms = ${PROXY_STREAM_IDLE_TIMEOUT_MS}`,
     `base_url = ${tomlString(codexBaseUrl)}`,
     `experimental_bearer_token = ${tomlString(localProxyKey)}`,
     "",

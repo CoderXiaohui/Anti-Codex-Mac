@@ -10,6 +10,9 @@ import {
   trafficSuggestion,
   boundedPositiveInteger,
   extractConversationKey,
+  createNativeTurnFailureStore,
+  nativeTurnRequestKey,
+  nextStreamingItemWithHeartbeat,
 } from "../antigravity-contract.mjs";
 
 export { MAX_CHAT_BODY_BYTES };
@@ -31,6 +34,7 @@ export async function createAntigravityChatServer(options = {}) {
   const streamHeartbeatMs = boundedPositiveInteger(options.streamHeartbeatMs, 15_000, 60_000);
   const authToken = String(options.authToken || randomBytes(32).toString("base64url"));
   const active = new Set();
+  const failedTurns = createNativeTurnFailureStore();
   const { recordTrafficOutcome, trafficDiagnostics } = createTrafficDiagnosticsStore(options.onTrafficOutcome);
 
   const server = createServer(async (request, response) => {
@@ -38,6 +42,7 @@ export async function createAntigravityChatServer(options = {}) {
     let finished = false;
     let iterator = null;
     let requestedModel = "";
+    let turnKey = "";
     active.add(controller);
 
     const abort = () => {
@@ -80,6 +85,13 @@ export async function createAntigravityChatServer(options = {}) {
       const body = await readJsonBody(request, maxBodyBytes);
       requestedModel = safeModelName(body?.model);
       const conversationKey = extractConversationKey(request.headers, body);
+      turnKey = nativeTurnRequestKey(request.headers, body, conversationKey);
+      const failure = failedTurns.get(turnKey);
+      if (failure) {
+        finished = true;
+        sendJson(response, failure.status, failure.payload);
+        return;
+      }
       const adapterOptions = conversationKey
         ? { signal: controller.signal, conversationKey }
         : { signal: controller.signal };
@@ -129,13 +141,14 @@ export async function createAntigravityChatServer(options = {}) {
     } catch (error) {
       if (controller.signal.aborted || response.destroyed) return;
       const mapped = error instanceof ChatAdapterError ? error : mapAntigravityError(error);
+      const serviceCode = safeErrorCode(error, mapped, error instanceof ChatAdapterError);
       if (request.method === "POST" && requestedModel) {
         const category = mapped.statusCode === 429 ? "quota_or_resource_limit" : mapped.code;
         recordTrafficOutcome(requestedModel, {
           result: "failure",
           category,
           statusCode: mapped.statusCode,
-          code: safeErrorCode(error, mapped, error instanceof ChatAdapterError),
+          code: serviceCode,
           suggestion: trafficSuggestion(mapped.statusCode, category),
         });
       }
@@ -143,6 +156,7 @@ export async function createAntigravityChatServer(options = {}) {
         ? "invalid_prompt"
         : mapped.code;
       const payload = openAiError(mapped.message, code, mapped.type);
+      failedTurns.record(turnKey, mapped.statusCode, serviceCode, payload);
       if (!response.headersSent) {
         finished = true;
         sendJson(response, mapped.statusCode, payload);
@@ -188,20 +202,6 @@ export async function createAntigravityChatServer(options = {}) {
     trafficDiagnostics,
     close,
   };
-}
-
-async function nextStreamingItemWithHeartbeat(iterator, response, heartbeatMs) {
-  const timer = setInterval(() => {
-    if (!response.destroyed && !response.writableEnded) {
-      response.write(": keep-alive\n\n");
-    }
-  }, heartbeatMs);
-  timer.unref?.();
-  try {
-    return await iterator.next();
-  } finally {
-    clearInterval(timer);
-  }
 }
 
 function bearerMatches(header, expected) {

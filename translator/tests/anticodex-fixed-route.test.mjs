@@ -189,6 +189,10 @@ test("Contract 3b: switching upstream routes preserves the Codex provider identi
 
   assert.equal(providerName(antigravity.config), "anticodex_antigravity");
   assert.equal(providerName(thirdParty.config), providerName(antigravity.config));
+  for (const route of [antigravity, thirdParty]) {
+    assert.match(route.config.split("[model_providers.anticodex_antigravity]")[1],
+      /^stream_idle_timeout_ms = 450000$/m);
+  }
   assert.match(thirdParty.config, /\[model_providers\.anticodex_antigravity\]/);
   assert.doesNotMatch(thirdParty.config, /\[model_providers\.anticodex_third_party\]/);
 });

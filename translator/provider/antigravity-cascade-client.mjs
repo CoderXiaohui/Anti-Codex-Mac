@@ -17,6 +17,7 @@ import {
   DEFAULT_TOOL_CONTINUATION_TIMEOUT_MS,
   estimatePromptTokens,
   nativeTurnError,
+  nativeTrajectoryStatus,
   renderBoundedSystemPromptSections as renderSystemPromptSections,
 } from "../antigravity-contract.mjs";
 export { estimatePromptTokens };
@@ -691,14 +692,7 @@ function normalizeFollowUpUserItems(request) {
 }
 
 function classifyTrajectoryError(message) {
-  const statusCode = /(?:user\s+)?location is not supported|unsupported (?:user\s+)?location/i.test(message)
-    ? 400
-    : /(?:RESOURCE_EXHAUSTED|quota|usage limit|rate limit)/i.test(message)
-      ? 429
-      : /(?:login|sign[ -]?in|unauthori[sz]ed|forbidden)/i.test(message)
-        ? 401
-        : 503;
-  return new AntigravityCascadeError(message, { statusCode });
+  return new AntigravityCascadeError(message, { statusCode: nativeTrajectoryStatus(message) });
 }
 
 function withToolCompatibilitySection(sections, tools) {

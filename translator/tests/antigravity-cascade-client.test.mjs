@@ -488,7 +488,7 @@ for (const [statusCode, upstreamStatus] of [[429, "RESOURCE_EXHAUSTED"], [503, "
       const attempt = (number) => ({
         type: "CORTEX_STEP_TYPE_ERROR_MESSAGE",
         status: "CORTEX_STEP_STATUS_DONE",
-        errorMessage: { error: { shortError: "API error (attempt " + number + "): " + upstreamStatus + " (code " + statusCode + ")" } },
+        errorMessage: { error: { shortError: "API error (attempt " + number + "): " + upstreamStatus + " (code " + statusCode + "): Check capacity and quota." } },
       });
       const service = fakeService({
         GetAvailableModels: () => jsonResponse(modelPayload()),

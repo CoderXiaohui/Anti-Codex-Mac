@@ -30,6 +30,48 @@ export function extractConversationKey(headers, body) {
   return "";
 }
 
+export function nativeTurnRequestKey(headers, body, conversationKey) {
+  const turn = headers["x-anticodex-turn-id"];
+  if (!conversationKey || typeof turn !== "string"
+      || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(turn)) return "";
+  return createHash("sha256")
+    .update(JSON.stringify([conversationKey, turn, stableJsonValue(body)]))
+    .digest("hex");
+}
+
+export function createNativeTurnFailureStore(now = Date.now) {
+  const entries = new Map();
+  return {
+    get(key) {
+      const failure = entries.get(key);
+      if (!failure || failure.expiresAt > now()) return failure;
+      entries.delete(key);
+      return undefined;
+    },
+    record(key, status, code, payload) {
+      if (!key || !((status === 429 && code === "RESOURCE_EXHAUSTED")
+          || (status === 503 && code === "UNAVAILABLE"))) return;
+      entries.delete(key);
+      entries.set(key, { status, payload, expiresAt: now() + 5 * 60_000 });
+      if (entries.size > 128) entries.delete(entries.keys().next().value);
+    },
+  };
+}
+
+export async function nextStreamingItemWithHeartbeat(iterator, response, heartbeatMs) {
+  const timer = setInterval(() => {
+    if (!response.destroyed && !response.writableEnded) {
+      response.write(": keep-alive\n\n");
+    }
+  }, heartbeatMs);
+  timer.unref?.();
+  try {
+    return await iterator.next();
+  } finally {
+    clearInterval(timer);
+  }
+}
+
 export function toolNameSet(tools = []) {
   return new Set(
     (tools ?? [])
@@ -720,6 +762,11 @@ export function safeModelName(value) {
   return model || "unknown";
 }
 
+export function nativeServiceError(message) {
+  const match = /\b([A-Z][A-Z0-9_]{2,63})\s+\(code\s+([1-5]\d{2})\)/.exec(String(message ?? ""));
+  return match ? { code: match[1], status: Number(match[2]) } : null;
+}
+
 export function safeErrorCode(error, mapped, isAdapterError = false) {
   const candidates = [error?.cause?.code, error?.details?.code, error?.response?.data?.error?.code];
   for (const candidate of candidates) {
@@ -728,8 +775,8 @@ export function safeErrorCode(error, mapped, isAdapterError = false) {
   }
   for (const message of [error?.cause?.message, error?.message]) {
     const text = String(message ?? "");
-    const serviceStatus = /\b([A-Z][A-Z0-9_]{2,63})\s+\(code\s+[1-5]\d{2}\)/.exec(text);
-    if (serviceStatus) return serviceStatus[1];
+    const serviceStatus = nativeServiceError(text);
+    if (serviceStatus) return serviceStatus.code;
     const match = /\b[A-Z][A-Z0-9_]{2,63}\b/.exec(text);
     if (match) return match[0];
   }
@@ -748,6 +795,21 @@ export function trafficSuggestion(statusCode, category) {
   if (statusCode === 504) return "Retry after the Antigravity request timeout has cleared.";
   if (statusCode >= 500) return "Check Antigravity Desktop readiness and retry.";
   return "Review the request and the local provider response.";
+}
+
+export function nativeTrajectoryStatus(message) {
+  const serviceStatus = nativeServiceError(message)?.status;
+  if (serviceStatus === 429 || serviceStatus === 503) {
+    return serviceStatus;
+  }
+  const statusCode = /(?:user\s+)?location is not supported|unsupported (?:user\s+)?location/i.test(message)
+    ? 400
+    : /(?:RESOURCE_EXHAUSTED|quota|usage limit|rate limit)/i.test(message)
+      ? 429
+      : /(?:login|sign[ -]?in|unauthori[sz]ed|forbidden)/i.test(message)
+        ? 401
+        : 503;
+  return statusCode;
 }
 
 export function nativeTurnError(payload, minimumStepIndex = -1) {
@@ -791,6 +853,9 @@ export function mapAntigravityProviderError(error, ErrorType) {
       code: "prompt_budget_insufficient",
       type: "invalid_request_error",
     });
+  }
+  if (statusCode === 503) {
+    return new ErrorType(message, { cause: error, statusCode, code: "upstream_service_error" });
   }
   if (statusCode === 401 || statusCode === 403 || /(?:login|sign[ -]?in|unauthori[sz]ed|forbidden)/i.test(message)) {
     return new ErrorType(message, { cause: error, statusCode: 401, code: "authentication_error" });

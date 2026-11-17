@@ -7,6 +7,7 @@ import {
   MAX_CHAT_BODY_BYTES,
   createAntigravityChatServer,
 } from "../provider/antigravity-chat-server.mjs";
+import { createNativeTurnFailureStore } from "../antigravity-contract.mjs";
 import { startAntigravityChatProvider } from "../provider/start-antigravity-chat-provider.mjs";
 
 test("provider construction passes the fixed-route bearer into the Chat server", async () => {
@@ -420,6 +421,74 @@ test("returns a terminal quota status before opening an empty stream", async () 
     await server.close();
   }
 });
+
+test("native turn failures expire and do not suppress local readiness errors", () => {
+  let time = 0;
+  const store = createNativeTurnFailureStore(() => time);
+  const error = { error: { code: "quota_exceeded", message: "provider is busy" } };
+  store.record("key", 503, "upstream_service_error", error);
+  assert.equal(store.get("key"), undefined);
+  store.record("key", 429, "RESOURCE_EXHAUSTED", error);
+  assert.equal(store.get("key").status, 429);
+  time += 5 * 60_000;
+  assert.equal(store.get("key"), undefined);
+});
+
+for (const [statusCode, serviceCode] of [[429, "RESOURCE_EXHAUSTED"], [503, "UNAVAILABLE"]]) {
+  test("reconnects to a terminal native " + statusCode + " without starting another chat", async () => {
+    let starts = 0;
+    const client = {
+      ...fakeClient([]),
+      async *start() {
+        starts += 1;
+        yield { type: "ready" };
+        if (starts === 1) {
+          throw Object.assign(new Error("API error (attempt 7): " + serviceCode + " (code " + statusCode + "): Check available capacity and quota."), {
+            statusCode,
+          });
+        }
+        yield { type: "text_delta", delta: "new turn answered" };
+        yield { type: "done" };
+      },
+    };
+    const server = await createAntigravityChatServer({ adapter: adapterFor(client) });
+    const originalTurn = "1bf40dea-f2f4-453a-be3c-dd5a8c3ac52a";
+    const nextTurn = "495c7560-b4d3-47aa-9386-96c775fc7727";
+    const send = (turnId, requestBody = body({ stream: true })) => authorizedFetch(server, "/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "thread-id": "cf2a367e-bf23-4418-82da-28593092f16e",
+        ...(turnId ? { "x-anticodex-turn-id": turnId } : {}),
+      },
+      body: JSON.stringify(requestBody),
+    });
+    try {
+      const first = await send(originalTurn);
+      assert.equal(first.status, 200);
+      assert.match(await first.text(), new RegExp(serviceCode));
+      const reconnect = await send(originalTurn);
+      assert.equal(reconnect.status, statusCode);
+      assert.match((await reconnect.json()).error.message, new RegExp(serviceCode));
+      assert.equal(starts, 1);
+      const manual = await send(nextTurn);
+      assert.equal(manual.status, 200);
+      assert.match(await manual.text(), /new turn answered/);
+      assert.equal(starts, 2);
+      const changed = await send(originalTurn, body({
+        stream: true,
+        messages: [{ role: "user", content: "A genuinely different request within this turn" }],
+      }));
+      assert.match(await changed.text(), /new turn answered/);
+      assert.equal(starts, 3);
+      const unbound = await send();
+      assert.match(await unbound.text(), /new turn answered/);
+      assert.equal(starts, 4);
+    } finally {
+      await server.close();
+    }
+  });
+}
 
 test("maps an upstream AbortError before headers without crashing the server", async () => {
   let streamCalls = 0;

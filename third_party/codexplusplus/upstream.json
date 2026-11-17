@@ -6,7 +6,7 @@
   "tag": "v2.6.7",
   "upstreamCommit": "e63ff6c98be7b79b1d8a5983b541ea2bd6cafcfd",
   "isolationPatchCommit": "8dd29e1e52eb24686b8ae8ac3a75d7fc08ae9e02",
-  "patchCommit": "b1b6d0dffc784529af9116b83482605a0b608297",
+  "patchCommit": "9d0bddd316defbf8417ce29c1eece321fe1ebaaa",
   "patches": [
     {
       "file": "candidates/v2.6.7/patches/0021-v267-format-normalization.patch",
@@ -22,16 +22,21 @@
       "file": "candidates/v2.6.7/patches/0023-v267-provider-affinity.patch",
       "sha256": "bd621534f56157db79859bfe52cafbc924ce54a9728aab0009bdb8cf40d9ef36",
       "scope": "Use the selected relay for direct Chat requests and keep unbound desktop titles local when both providers are configured"
+    },
+    {
+      "file": "candidates/v2.6.7/patches/0024-v267-antigravity-turn-id-affinity.patch",
+      "sha256": "689599067b91a46b9e5142a404810034225b1aa983dc512d9d6926ac1bda9c95",
+      "scope": "Forward only a validated Codex turn UUID to the managed loopback Antigravity Chat relay"
     }
   ],
   "verification": {
-    "patchReplay": "3 project patches replayed without automatic conflict resolution; head b1b6d0dffc784529af9116b83482605a0b608297; tree ab95b6a503da1e3225ef5439969864c13e8830ed",
+    "patchReplay": "4 project patches replayed without automatic conflict resolution; head 9d0bddd316defbf8417ce29c1eece321fe1ebaaa; tree 1f59245c02368392c97d70866149b880622bc851",
     "sourceIsolationAudit": "passed",
     "auditRegressionTests": "Candidate-local format, protocol proxy, response history (integration and library), native stream forwarding, local helper safeguards and watcher, Manager and launcher checks passed; complete project regression and promotion preflight remain required before replacing accepted upstream.json.",
     "cargoFmt": "passed",
     "cargoCheck": "protocol proxy, response history (integration and library), native stream forwarding, local helper safeguards and watcher tests passed; Windows x64 Manager check passed",
     "windowsNativeTests": "Windows x64 release launcher build passed through the managed project runner",
-    "launcherReleaseBuild": "sha256:7cfb6319ced0173e8ac7184a0d7666f7498acbbbabe085a473bb52caddbe490d",
+    "launcherReleaseBuild": "sha256:b4f884719caf41386d1be2ba53420cbe512b67aac5259a51690f0f9b0c469385",
     "runtimeIsolation": "candidate only; not activated"
   }
 }
