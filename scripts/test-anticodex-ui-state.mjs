@@ -54,6 +54,8 @@ const skipManagerActionProbe = /^(1|true|yes)$/i.test(String(args.get("--skip-ma
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const startedAtMs = Date.now();
 const managerInjectSource = fs.readFileSync(new URL("./anticodex-manager-inject.js", import.meta.url), "utf8");
+const expectedManagerVersion = /const VERSION = "(native-panel-v\d+)";/.exec(managerInjectSource)?.[1];
+if (!expectedManagerVersion) throw new Error("Cannot determine the in-app manager version.");
 const managerButtonLockPath = path.join(os.tmpdir(), "anticodex-manager-button.lock");
 const EXPECTED_ACTION_GROUPS = Object.freeze({
   status: Object.freeze(["refreshStatus"]),
@@ -252,7 +254,9 @@ function upstreamConfigContractFailures(injectSource) {
   const end = injectSource.indexOf("function installActions()", start);
   const block = injectSource.slice(start, end);
   if (!/text:\s*"保存配置"/.test(block)) failures.push("third-party form is missing 保存配置");
-  if (!block.includes("配置已保存，可在聊天输入框的模型菜单选择第三方模型。")) failures.push("third-party form is missing the saved-configuration guidance");
+  if (!block.includes("可在聊天输入框中选择。")) failures.push("third-party form is missing the saved-configuration guidance");
+  if (!block.includes("拉取模型")) failures.push("third-party form is missing model discovery");
+  if (/row\("模型名|默认测试模型/.test(block)) failures.push("third-party connection setup still asks for a model");
   for (const [label, forbidden] of [
     ["保存并切换", /保存并切换/],
     ["恢复 Antigravity", /恢复 Antigravity/],
@@ -1270,7 +1274,7 @@ try {
   } catch (error) {
     selectedContextProbe = { error: String(error?.message || error) };
   }
-  staticContextCoversManager = selectedContextProbe?.version === "native-panel-v121"
+  staticContextCoversManager = selectedContextProbe?.version === expectedManagerVersion
     && selectedContextProbe?.hasOpen === true
     && managerPage?.hasManagerActionEndpoint === true
     && managerPage?.hasManagerActionToken === true
@@ -1309,7 +1313,7 @@ try {
     }), managerProbeTimeoutMs);
     for (let attempt = 0; attempt < 40; attempt++) {
       const installedProbe = await ws.call(id++, "Runtime.evaluate", runtimeParams(`Boolean(
-        window.__ANTICODEX_MANAGER_VERSION__ === "native-panel-v121"
+        window.__ANTICODEX_MANAGER_VERSION__ === ${JSON.stringify(expectedManagerVersion)}
       )`, {
         returnByValue: true,
         awaitPromise: false,
@@ -1382,13 +1386,13 @@ try {
       skippedDeepProbe: true,
       hasFunction: selectedContextProbe?.hasOpen === true,
       version: selectedContextProbe?.version || "",
-      installed: selectedContextProbe?.version === "native-panel-v121",
+      installed: selectedContextProbe?.version === expectedManagerVersion,
       hasButton: selectedContextProbe?.hasButton === true,
       buttonText: selectedContextProbe?.buttonText || "",
       coveredBy: "fast-ui-state",
     };
     if (!managerOverlay.hasFunction) failures.push("in-app manager function is not injected");
-    if (managerOverlay.version !== "native-panel-v121") failures.push(`in-app manager version is '${managerOverlay.version || ""}', expected native-panel-v121`);
+    if (managerOverlay.version !== expectedManagerVersion) failures.push(`in-app manager version is '${managerOverlay.version || ""}', expected ${expectedManagerVersion}`);
     if (managerOverlay.hasButton) failures.push("in-app manager still exposes the removed floating Manager button");
     if (!evaluated) {
       failures.push("CDP evaluation returned no page state");
@@ -1799,13 +1803,13 @@ try {
     const exceptionText = managerResult?.exceptionDetails?.exception?.description
       || managerResult?.exceptionDetails?.text
       || "";
-    if (selectedContextProbe?.version === "native-panel-v121") {
+    if (selectedContextProbe?.version === expectedManagerVersion) {
       managerOverlay = {
         dynamicProbeUnavailable: true,
         probeError: managerProbeError?.message || exceptionText || "manager overlay probe did not return a value",
         hasFunction: selectedContextProbe?.hasOpen === true,
         version: selectedContextProbe?.version || "",
-        installed: selectedContextProbe?.version === "native-panel-v121",
+        installed: selectedContextProbe?.version === expectedManagerVersion,
         hasButton: selectedContextProbe?.hasButton === true,
         buttonText: selectedContextProbe?.buttonText || "",
         coveredBy: "context-probe-and-manager-page",
@@ -1828,7 +1832,7 @@ try {
     failures.push(`manager opened a separate page target: ${managerPageTargets.map((item) => item.url).join(", ")}`);
   }
   if (!managerOverlay?.hasFunction) failures.push("in-app manager function is not injected");
-  if (managerOverlay?.version !== "native-panel-v121") failures.push(`in-app manager version is '${managerOverlay?.version || ""}', expected native-panel-v121`);
+  if (managerOverlay?.version !== expectedManagerVersion) failures.push(`in-app manager version is '${managerOverlay?.version || ""}', expected ${expectedManagerVersion}`);
   if (!managerOverlay?.installed) failures.push("in-app manager install flag is not set");
   const managerOverlayDynamicUnavailable = managerOverlay?.dynamicProbeUnavailable === true;
   if (managerOverlayDynamicUnavailable) {

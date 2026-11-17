@@ -121,6 +121,37 @@ test("model discovery reads OpenAI-compatible ids without leaking the key", asyn
   assert.equal(calls[0].init.headers.authorization, "Bearer DISCOVERY_SECRET");
 });
 
+test("model discovery keeps every valid provider id beyond 200 and skips invalid entries", async () => {
+  const expected = Array.from({ length: 250 }, (_, index) => `text-model-${String(index).padStart(3, "0")}`);
+  const models = await discoverCodexPlusPlusUpstreamModels({
+    protocol: "openai-compatible",
+    baseUrl: "http://127.0.0.1:8080/v1",
+    apiKey: "DISCOVERY_SECRET",
+  }, {
+    fetchImpl: async () => new Response(JSON.stringify({ data: [
+      ...expected.map((id) => ({ id })),
+      { id: "" },
+      { id: "invalid-model-id-".repeat(20) },
+      { id: expected[0] },
+    ] }), { status: 200 }),
+  });
+  assert.deepEqual(models, expected);
+});
+
+test("model discovery enforces an explicit response byte limit", async () => {
+  const models = await discoverCodexPlusPlusUpstreamModels({
+    protocol: "openai-compatible",
+    baseUrl: "https://api.example.test/v1",
+    apiKey: "DISCOVERY_SECRET",
+  }, {
+    fetchImpl: async () => new Response(JSON.stringify({ data: [{ id: "model" }] }), {
+      status: 200,
+      headers: { "content-length": String(10 * 1024 * 1024 + 1) },
+    }),
+  });
+  assert.deepEqual(models, []);
+});
+
 test("connection probe can attach discovered provider models", async () => {
   const calls = [];
   const stages = await testCodexPlusPlusUpstreamConnection({

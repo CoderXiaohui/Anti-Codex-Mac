@@ -310,7 +310,7 @@ test("account diagnostics retain each model's latest traffic outcome and classif
     start(request) {
       return (async function* () {
         if (request.model === "gemini-model-a") {
-          throw Object.assign(new Error("RESOURCE_EXHAUSTED"), { statusCode: 429 });
+          throw Object.assign(new Error("API error (attempt 7): RESOURCE_EXHAUSTED (code 429): Resource has been exhausted."), { statusCode: 429 });
         }
         yield { type: "text_delta", delta: "healthy" };
         yield { type: "done" };

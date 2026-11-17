@@ -35,9 +35,11 @@ test("Manager labels third-party routes as Chat Completions or Responses", () =>
   assert.doesNotMatch(managerUi, /value:\s*"anthropic"/);
 });
 
-test("Manager discloses one real probe and reuses it during save", () => {
-  assert.match(managerUi, /发送一次最小真实请求/);
-  assert.match(managerUi, /保存配置.*复用这次结果.*不会再次请求/);
+test("Manager pulls provider models and saves the connection without a model input", () => {
+  const source = managerUi.slice(managerUi.indexOf("async function showUpstreamConfig"));
+  assert.match(source, /text:\s*"拉取模型"/);
+  assert.match(source, /discoverOnly:\s*true/);
+  assert.doesNotMatch(source, /row\("模型名|默认测试模型|发送一次最小真实请求/);
   assert.match(controlApi, /UPSTREAM_TEST_EVIDENCE_TTL_MS/);
   assert.match(controlApi, /createHmac\("sha256", upstreamTestEvidenceSalt\)/);
 });

@@ -13,11 +13,13 @@ param(
     [int]$ContextWindow = 272000,
     [string]$ApiKey = "",
     [string]$TestStatus = "pending",
-    [string]$CapabilitiesJson = "{}"
+    [string]$CapabilitiesJson = "{}",
+    [string]$CapabilitiesPath = ""
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
 Add-Type -AssemblyName System.Security
 
@@ -150,9 +152,13 @@ function Test-AllowedBaseUrl {
 }
 
 function Read-Capabilities {
-    if ([string]::IsNullOrWhiteSpace($CapabilitiesJson)) { return @{} }
+    $json = $CapabilitiesJson
+    if ($CapabilitiesPath) {
+        $json = [System.IO.File]::ReadAllText($CapabilitiesPath, [System.Text.Encoding]::UTF8)
+    }
+    if ([string]::IsNullOrWhiteSpace($json)) { return @{} }
     try {
-        return ($CapabilitiesJson | ConvertFrom-Json)
+        return ($json | ConvertFrom-Json)
     } catch {
         return @{}
     }

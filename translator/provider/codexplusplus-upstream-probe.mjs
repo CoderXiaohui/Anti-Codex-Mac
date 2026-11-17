@@ -1,4 +1,5 @@
 const CHAT_PROTOCOLS = new Set(["openai-compatible", "chat", "chat-completions", "chatcompletions"]);
+const MAX_MODELS_RESPONSE_BYTES = 10 * 1024 * 1024;
 
 export function normalizeCodexPlusPlusProbeEndpoint(value = {}) {
   const rawProtocol = String(value.protocol ?? "").trim().toLowerCase();
@@ -186,7 +187,7 @@ export async function discoverCodexPlusPlusUpstreamModels(value = {}, options = 
       signal: controller.signal,
     });
     if (!response.ok) return [];
-    const body = await response.json();
+    const body = await readJsonResponseLimited(response);
     const candidates = Array.isArray(body)
       ? body
       : Array.isArray(body?.data)
@@ -198,10 +199,9 @@ export async function discoverCodexPlusPlusUpstreamModels(value = {}, options = 
       const id = typeof candidate === "string"
         ? candidate.trim()
         : String(candidate?.id ?? candidate?.name ?? candidate?.model ?? "").trim();
-      if (!id || id.length > 200 || seen.has(id)) continue;
+      if (!id || id.length > 200 || /[\r\n]/.test(id) || seen.has(id)) continue;
       seen.add(id);
       ids.push(id);
-      if (ids.length >= 200) break;
     }
     return ids;
   } catch {
@@ -209,6 +209,41 @@ export async function discoverCodexPlusPlusUpstreamModels(value = {}, options = 
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function readJsonResponseLimited(response) {
+  const declaredLength = Number(response.headers?.get?.("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_MODELS_RESPONSE_BYTES) {
+    throw new Error("Provider model list response is too large.");
+  }
+
+  const reader = response.body?.getReader?.();
+  if (!reader) {
+    const text = await response.text();
+    if (Buffer.byteLength(text, "utf8") > MAX_MODELS_RESPONSE_BYTES) {
+      throw new Error("Provider model list response is too large.");
+    }
+    return JSON.parse(text);
+  }
+
+  const chunks = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = Buffer.from(value);
+      totalBytes += chunk.byteLength;
+      if (totalBytes > MAX_MODELS_RESPONSE_BYTES) {
+        await reader.cancel();
+        throw new Error("Provider model list response is too large.");
+      }
+      chunks.push(chunk);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return JSON.parse(Buffer.concat(chunks, totalBytes).toString("utf8"));
 }
 
 function probePath(pathname, protocol) {

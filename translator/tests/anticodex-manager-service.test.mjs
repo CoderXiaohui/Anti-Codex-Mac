@@ -1024,7 +1024,7 @@ test("Anti-Codex Manager Service API contract and security suite", async (t) => 
     });
     try {
       const untested = await saveProfile(profileBody);
-      assert.equal(untested.status, 400);
+      assert.equal(untested.status, 200, "an untested save discovers the provider catalog without a completion request");
       assert.equal(providerRequests, 0);
 
       const tested = await testProfile(profileBody);
@@ -1037,7 +1037,7 @@ test("Anti-Codex Manager Service API contract and security suite", async (t) => 
       assert.equal(providerRequests, 1);
       assert.doesNotMatch(await response.text(), /secretNote|must-not-persist/);
       const repeatedSave = await saveProfile(profileBody);
-      assert.equal(repeatedSave.status, 400);
+      assert.equal(repeatedSave.status, 200);
       assert.equal(providerRequests, 1);
 
       const persisted = JSON.parse(fs.readFileSync(path.join(tempDir, "upstream-profile.json"), "utf8"));
@@ -1054,7 +1054,7 @@ test("Anti-Codex Manager Service API contract and security suite", async (t) => 
       const boundedTest = await testProfile({ ...profileBody, capabilities: {}, timeoutMs: 1 });
       assert.equal((await boundedTest.json()).ok, true);
       const changedAfterTest = await saveProfile({ ...profileBody, contextWindow: 256_000 });
-      assert.equal(changedAfterTest.status, 400);
+      assert.equal(changedAfterTest.status, 200, "changed save fields trigger fresh model listing instead of requiring a completion probe");
       assert.equal(providerRequests, 2);
       const retested = await testProfile({ ...profileBody, capabilities: {}, timeoutMs: 1 });
       assert.equal((await retested.json()).ok, true);
@@ -1073,6 +1073,168 @@ test("Anti-Codex Manager Service API contract and security suite", async (t) => 
       assert.equal(saveDiscoveredOther.status, 200);
       const savePayload = await saveDiscoveredOther.json();
       assert.deepEqual(savePayload.providerModels, ["gpt-next", "gpt-local"]);
+    } finally {
+      await closeServer(providerServer);
+      fs.rmSync(fixture.tempDir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test("model preview and profile save list every provider model without sending completions", async () => {
+    const fixture = createSaveOnlyFixture();
+    const settingsPath = path.join(tempDir, "codexplusplus", "settings.json");
+    const catalogPath = path.join(tempDir, "codex-home-deepseek-app", "anticodex-model-catalog.json");
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.mkdirSync(path.dirname(catalogPath), { recursive: true });
+    fs.copyFileSync(fixture.settingsPath, settingsPath);
+    fs.copyFileSync(fixture.catalogPath, catalogPath);
+
+    const modelIds = ["gpt-local", "gpt-next", ...Array.from({ length: 250 }, (_, index) => {
+      const prefix = `gpt-model-${index}-`;
+      return `${prefix}${"x".repeat(100 - prefix.length)}`;
+    })];
+    const requestCounts = new Map();
+    const providerServer = createServer((req, res) => {
+      const pathname = new URL(req.url, "http://127.0.0.1").pathname;
+      const key = `${req.method} ${pathname}`;
+      requestCounts.set(key, (requestCounts.get(key) || 0) + 1);
+      if (req.method === "GET") {
+        const listedModels = pathname.startsWith("/no-text/")
+          ? ["text-embedding-3-small", "whisper-large"]
+          : modelIds;
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ data: [
+          ...listedModels.map((id) => ({ id })),
+          { id: "" },
+          { id: "invalid-model-id-".repeat(20) },
+          { id: listedModels[0] },
+        ] }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: "OK" } }] }));
+    });
+    await listenOnLoopback(providerServer);
+    const port = providerServer.address().port;
+    const headers = {
+      "content-type": "application/json",
+      origin: baseUrl,
+      "x-anticodex-manager-token": token,
+    };
+    const saveProfile = (body) => fetch(`${baseUrl}/anticodex/upstream-profile`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+    const testProfile = (body) => fetch(`${baseUrl}/anticodex/upstream-test`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+    const profileBody = {
+      mode: "third-party",
+      protocol: "openai-compatible",
+      baseUrl: `http://127.0.0.1:${port}/v1`,
+      apiKey: "catalog-key",
+      contextWindow: 128_000,
+    };
+
+    try {
+      const previewResponse = await testProfile({ ...profileBody, discoverOnly: true });
+      assert.equal(previewResponse.status, 200);
+      const preview = await previewResponse.json();
+      assert.equal(preview.ok, true);
+      assert.deepEqual(preview.models, modelIds);
+      assert.equal(preview.summary.status, "ok");
+      assert.equal(requestCounts.get("GET /v1/models"), 1);
+      assert.equal(requestCounts.get("POST /v1/chat/completions") || 0, 0);
+
+      const saveResponse = await saveProfile({ ...profileBody, baseUrl: `http://127.0.0.1:${port}/other/v1` });
+      assert.equal(saveResponse.status, 200);
+      const savePayload = await saveResponse.json();
+      const expectedSavedModels = ["gpt-next", ...modelIds.filter((id) => id !== "gpt-next")];
+      assert.deepEqual(savePayload.providerModels, expectedSavedModels);
+      assert.equal(requestCounts.get("GET /other/v1/models"), 1, "a preview for another endpoint cannot satisfy save");
+      assert.equal([...requestCounts].filter(([key]) => key.startsWith("POST ")).reduce((count, [, value]) => count + value, 0), 0);
+
+      const persisted = JSON.parse(fs.readFileSync(path.join(tempDir, "upstream-profile.json"), "utf8"));
+      assert.equal(persisted.model, "gpt-next", "keep the existing model when it remains in the provider catalog");
+      assert.deepEqual(persisted.capabilities.providerModels, expectedSavedModels);
+      const savedSettings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+      const thirdParty = savedSettings.relayProfiles.find((profile) => profile.id === "anticodex-third-party");
+      assert.equal(thirdParty.testModel, "gpt-next");
+      assert.equal(thirdParty.modelList.split("\n").length, modelIds.length + 1);
+      assert.ok(JSON.parse(fs.readFileSync(catalogPath, "utf8")).models.some((entry) => entry.slug.startsWith("anticodex/third-party/gpt-model-249-")));
+
+      const sameProviderWithoutKey = await saveProfile({
+        ...profileBody,
+        baseUrl: `http://127.0.0.1:${port}/other/v1/chat/completions`,
+        apiKey: "",
+      });
+      assert.equal(sameProviderWithoutKey.status, 200, await sameProviderWithoutKey.clone().text());
+      assert.equal(requestCounts.get("GET /other/v1/models"), 2);
+      assert.equal(requestCounts.get("POST /other/v1/chat/completions") || 0, 0);
+
+      const differentProviderWithoutKey = await saveProfile({
+        ...profileBody,
+        baseUrl: `http://127.0.0.1:${port}/different/v1`,
+        apiKey: "",
+      });
+      assert.equal(differentProviderWithoutKey.status, 400);
+      assert.equal(requestCounts.get("GET /different/v1/models") || 0, 0, "saved keys must not be sent to a new endpoint");
+
+      const noTextModels = await saveProfile({
+        ...profileBody,
+        baseUrl: `http://127.0.0.1:${port}/no-text/v1`,
+        apiKey: "no-text-key",
+      });
+      assert.equal(noTextModels.status, 200, "a list without text models still saves the valid catalog");
+      const noTextPayload = await noTextModels.json();
+      assert.deepEqual(noTextPayload.providerModels, ["text-embedding-3-small", "whisper-large"]);
+      assert.equal(requestCounts.get("POST /no-text/v1/chat/completions") || 0, 0);
+    } finally {
+      await closeServer(providerServer);
+      fs.rmSync(fixture.tempDir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test("concurrent third-party profile saves cannot overlap file writes", async () => {
+    const fixture = createSaveOnlyFixture();
+    const settingsPath = path.join(tempDir, "codexplusplus", "settings.json");
+    const catalogPath = path.join(tempDir, "codex-home-deepseek-app", "anticodex-model-catalog.json");
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.mkdirSync(path.dirname(catalogPath), { recursive: true });
+    fs.copyFileSync(fixture.settingsPath, settingsPath);
+    fs.copyFileSync(fixture.catalogPath, catalogPath);
+    let listRequests = 0;
+    const providerServer = createServer((req, res) => {
+      if (req.method === "GET") listRequests += 1;
+      setTimeout(() => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(req.method === "GET"
+          ? JSON.stringify({ data: [{ id: "gpt-concurrent" }] })
+          : JSON.stringify({ choices: [{ message: { role: "assistant", content: "OK" } }] }));
+      }, 75);
+    });
+    await listenOnLoopback(providerServer);
+    const saveProfile = (apiKey) => fetch(`${baseUrl}/anticodex/upstream-profile`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: baseUrl,
+        "x-anticodex-manager-token": token,
+      },
+      body: JSON.stringify({
+        mode: "third-party",
+        protocol: "openai-compatible",
+        baseUrl: `http://127.0.0.1:${providerServer.address().port}/v1`,
+        apiKey,
+        contextWindow: 128_000,
+      }),
+    });
+    try {
+      const responses = await Promise.all([saveProfile("save-key-a"), saveProfile("save-key-b")]);
+      assert.deepEqual(responses.map((response) => response.status).sort(), [200, 409]);
+      assert.equal(listRequests, 1);
     } finally {
       await closeServer(providerServer);
       fs.rmSync(fixture.tempDir, { recursive: true, force: true });

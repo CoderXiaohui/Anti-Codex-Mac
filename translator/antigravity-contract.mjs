@@ -727,7 +727,10 @@ export function safeErrorCode(error, mapped, isAdapterError = false) {
     if (/^[a-zA-Z0-9_.-]{1,64}$/.test(code)) return code;
   }
   for (const message of [error?.cause?.message, error?.message]) {
-    const match = /\b[A-Z][A-Z0-9_]{2,63}\b/.exec(String(message ?? ""));
+    const text = String(message ?? "");
+    const serviceStatus = /\b([A-Z][A-Z0-9_]{2,63})\s+\(code\s+[1-5]\d{2}\)/.exec(text);
+    if (serviceStatus) return serviceStatus[1];
+    const match = /\b[A-Z][A-Z0-9_]{2,63}\b/.exec(text);
     if (match) return match[0];
   }
   if (!isAdapterError) {

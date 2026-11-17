@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import {
     buildCodexPlusPlusProbeRequest,
+    discoverCodexPlusPlusUpstreamModels,
     selectDefaultCodexPlusPlusModel,
     testCodexPlusPlusUpstreamConnection,
 } from "../translator/provider/codexplusplus-upstream-probe.mjs";
@@ -893,17 +894,30 @@ async function runUpstreamProfileScript(action, values = {}, stateRoot = "", scr
     addArg("Model", values.model);
     addArg("ContextWindow", values.contextWindow);
     addArg("TestStatus", values.testStatus);
-    addArg("CapabilitiesJson", values.capabilitiesJson);
-    const { stdout } = await execFileAsync(powershellPath(), args, {
-        cwd: scriptsRoot,
-        timeout: 15000,
-        windowsHide: true,
-        maxBuffer: 1024 * 1024,
-        env: {
-            ...process.env,
-            ...(values.apiKey ? { ANTICODEX_UPSTREAM_API_KEY_INPUT: String(values.apiKey) } : {}),
-        },
-    });
+    let capabilitiesFile;
+    let stdout;
+    try {
+        if (values.capabilitiesJson) {
+            fs.mkdirSync(stateRoot, { recursive: true });
+            capabilitiesFile = path.join(stateRoot, ".provider-models-" + crypto.randomUUID() + ".json");
+            fs.writeFileSync(capabilitiesFile, values.capabilitiesJson, { encoding: "utf8", flag: "wx" });
+            addArg("CapabilitiesPath", capabilitiesFile);
+        }
+        ({ stdout } = await execFileAsync(powershellPath(), args, {
+            cwd: scriptsRoot,
+            timeout: 15000,
+            windowsHide: true,
+            maxBuffer: 24 * 1024 * 1024,
+            env: {
+                ...process.env,
+                ...(values.apiKey ? { ANTICODEX_UPSTREAM_API_KEY_INPUT: String(values.apiKey) } : {}),
+            },
+        }));
+    } finally {
+        if (capabilitiesFile) {
+            try { fs.rmSync(capabilitiesFile, { force: true }); } catch {}
+        }
+    }
     const trimmed = String(stdout || "").trim();
     if (!trimmed) return {};
     try {
@@ -1047,8 +1061,8 @@ export function saveThirdPartyCodexPlusPlusSettings(options = {}) {
     const baseUrl = String(thirdParty.baseUrl || "").trim().replace(/\/+$/, "");
     const model = String(thirdParty.model || "").trim();
     const apiKey = String(thirdParty.apiKey || "");
-    if (!baseUrl || !model || !apiKey.trim()) {
-        throw new Error("Third-party base URL, model, and API key are required.");
+    if (!baseUrl || !model || model.length > 200 || /[\r\n]/.test(model) || !apiKey.trim()) {
+        throw new Error("Third-party base URL, provider model, and API key are required.");
     }
     let parsedBaseUrl;
     try { parsedBaseUrl = new URL(baseUrl); }
@@ -1064,13 +1078,9 @@ export function saveThirdPartyCodexPlusPlusSettings(options = {}) {
     if (thirdParty.providerModels != null && !Array.isArray(thirdParty.providerModels)) {
         throw new Error("Third-party provider models must be an array.");
     }
-    const providerModelValues = [model, ...(thirdParty.providerModels || [])];
-    if (providerModelValues.some((entry) => typeof entry !== "string"
-        || !entry.trim()
-        || entry.length > 200
-        || /[\r\n]/.test(entry))) {
-        throw new Error("Third-party provider model IDs must be non-empty single-line strings up to 200 characters.");
-    }
+    const providerModelValues = [model, ...(thirdParty.providerModels || [])]
+        .filter((entry) => typeof entry === "string" && entry.trim()
+            && entry.trim().length <= 200 && !/[\r\n]/.test(entry));
     const providerModels = uniqueModelIds(providerModelValues);
     const modelList = uniqueModelIds([
         THIRD_PARTY_MODEL_SLOT,
@@ -1346,6 +1356,21 @@ function normalizeUpstreamProfile(profile = {}) {
   return { protocol, baseUrl, apiKey, model, extraHeaders };
 }
 
+function readSavedUpstreamProfileMetadata(stateRoot = "") {
+    if (!stateRoot) return {};
+    try {
+        const saved = JSON.parse(fs.readFileSync(path.join(stateRoot, "upstream-profile.json"), "utf8"));
+        return {
+            protocol: String(saved?.protocol || ""),
+            baseUrl: String(saved?.baseUrl || ""),
+            model: String(saved?.model || ""),
+            contextWindow: Number(saved?.contextWindow) || 0,
+        };
+    } catch {
+        return {};
+    }
+}
+
 function maskSecret(val) {
   if (!val) return "";
   const str = String(val);
@@ -1372,7 +1397,9 @@ function sanitizedConnectionStages(stages = []) {
         status: String(stage?.status || ""),
         detail: String(stage?.detail || ""),
         ...(Array.isArray(stage?.models)
-            ? { models: stage.models.map((model) => String(model || "")).filter(Boolean).slice(0, 200) }
+            ? { models: stage.models.map((model) => String(model || "")).filter((model) => (
+                model.length > 0 && model.length <= 200 && !/[\r\n]/.test(model)
+            )) }
             : {}),
     }));
 }
@@ -1382,7 +1409,7 @@ function providerModelIdsFromConnectionStages(stages = [], configuredModel = "")
     const seen = new Set();
     const add = (value) => {
         const id = String(value || "").trim();
-        if (!id || seen.has(id)) return;
+        if (!id || id.length > 200 || /[\r\n]/.test(id) || seen.has(id)) return;
         seen.add(id);
         ids.push(id);
     };
@@ -1391,7 +1418,43 @@ function providerModelIdsFromConnectionStages(stages = [], configuredModel = "")
         if (!Array.isArray(stage?.models)) continue;
         for (const model of stage.models) add(model);
     }
-    return ids.slice(0, 200);
+    return ids;
+}
+
+function resolveThirdPartyModel(models = [], preferredModel = "", requestedModel = "") {
+    const requested = String(requestedModel || "").trim();
+    if (requested) return requested;
+    const preferred = String(preferredModel || "").trim();
+    if (preferred && models.includes(preferred)) return preferred;
+    return selectDefaultCodexPlusPlusModel(models) || models[0] || "";
+}
+
+function sameNormalizedUpstreamProvider(left = {}, right = {}) {
+    const model = String(left.model || right.model || "").trim();
+    if (!model) return false;
+    try {
+        const leftRequest = buildCodexPlusPlusProbeRequest({ ...left, model });
+        const rightRequest = buildCodexPlusPlusProbeRequest({ ...right, model });
+        return leftRequest.protocol === rightRequest.protocol && leftRequest.url === rightRequest.url;
+    } catch {
+        return false;
+    }
+}
+
+function modelListingStages(models = []) {
+    if (models.length > 0) {
+        return [{
+            stage: "模型列表",
+            status: "ok",
+            detail: `${models.length} provider model(s)`,
+            models,
+        }];
+    }
+    return [{
+        stage: "模型列表",
+        status: "fail",
+        detail: "model_not_found: The provider returned no usable model IDs.",
+    }];
 }
 
 function managerUpstreamTimeoutMs(value) {
@@ -2046,6 +2109,7 @@ export function createAntiCodexManagerService(options = {}) {
   const upstreamTestEvidenceSalt = crypto.randomBytes(32);
   let upstreamTestEvidence = null;
   let upstreamTestGeneration = 0;
+  let upstreamSaveInProgress = false;
   const upstreamEndpointFingerprint = (profile, contextWindow) => {
     const request = buildCodexPlusPlusProbeRequest(profile);
     return crypto.createHmac("sha256", upstreamTestEvidenceSalt).update(JSON.stringify([
@@ -2407,31 +2471,62 @@ export function createAntiCodexManagerService(options = {}) {
       try {
         const raw = await readRequestBody(req);
         const body = JSON.parse(raw.toString("utf8") || "{}");
+        const requestedModel = String(body.model || "").trim();
+        let savedRuntime = requestedModel ? {} : readSavedUpstreamProfileMetadata(stateRoot);
         let apiKey = String(body.apiKey || "");
         if (!apiKey) {
-          const savedRuntime = await runUpstreamProfileScript("GetRuntime", {}, stateRoot, scriptsRoot);
-          apiKey = String(savedRuntime.apiKey || "");
+          savedRuntime = {
+            ...savedRuntime,
+            ...await runUpstreamProfileScript("GetRuntime", {}, stateRoot, scriptsRoot),
+          };
+          const savedKey = String(savedRuntime.apiKey || "");
+          const savedModel = String(savedRuntime.model || "").trim();
+          const endpointProfile = {
+            protocol: body.protocol,
+            baseUrl: body.baseUrl,
+            apiKey: savedKey,
+            model: requestedModel || savedModel,
+          };
+          if (!savedKey || !sameNormalizedUpstreamProvider(endpointProfile, savedRuntime)) {
+            throw new Error("Provider API key is required for a different provider endpoint.");
+          }
+          apiKey = savedKey;
         }
         const profile = {
           protocol: body.protocol,
           baseUrl: body.baseUrl,
           apiKey,
-          model: body.model,
+          model: requestedModel || String(savedRuntime.model || "").trim(),
         };
-        const stages = await testCodexPlusPlusUpstreamConnection(profile, {
-          timeoutMs: managerUpstreamTimeoutMs(body.timeoutMs),
-          discoverModels: true,
-        });
+        const discoveryOnly = body.discoverOnly === true || !requestedModel;
+        let stages;
+        let discoveredModels;
+        let resolvedModel;
+        if (discoveryOnly) {
+          discoveredModels = await discoverCodexPlusPlusUpstreamModels(profile, {
+            timeoutMs: managerUpstreamTimeoutMs(body.timeoutMs),
+          });
+          stages = modelListingStages(discoveredModels);
+          resolvedModel = resolveThirdPartyModel(discoveredModels, savedRuntime.model, requestedModel);
+        } else {
+          stages = await testCodexPlusPlusUpstreamConnection(profile, {
+            timeoutMs: managerUpstreamTimeoutMs(body.timeoutMs),
+            discoverModels: true,
+          });
+          discoveredModels = providerModelIdsFromConnectionStages(stages, requestedModel);
+          resolvedModel = requestedModel || resolveThirdPartyModel(discoveredModels, savedRuntime.model);
+        }
         const ok = stages.length > 0 && stages.every((stage) => stage.status !== "fail");
         const sanitizedStages = sanitizedConnectionStages(stages);
-        const discoveredModels = providerModelIdsFromConnectionStages(sanitizedStages, body.model);
-        const resolvedModel = String(body.model || "").trim() || selectDefaultCodexPlusPlusModel(discoveredModels);
+        discoveredModels = providerModelIdsFromConnectionStages(sanitizedStages, "");
         if (ok && resolvedModel && testGeneration === upstreamTestGeneration) {
           const resolvedProfile = { ...profile, model: resolvedModel };
           upstreamTestEvidence = {
             fingerprint: upstreamTestFingerprint(resolvedProfile, body.contextWindow),
             endpointFingerprint: upstreamEndpointFingerprint(resolvedProfile, body.contextWindow),
             resolvedModel,
+            models: discoveredModels,
+            discoveryOnly,
             allowedModels: uniqueModelIds([resolvedModel, ...discoveredModels]),
             stages: sanitizedStages,
             expiresAt: Date.now() + UPSTREAM_TEST_EVIDENCE_TTL_MS,
@@ -2455,8 +2550,12 @@ export function createAntiCodexManagerService(options = {}) {
 
     if (req.method === "POST" && pathname === "/anticodex/upstream-profile") {
       if (!validateManagerActionRequest(req, res, managerActionToken)) return;
+      if (upstreamSaveInProgress) {
+        return jsonResponse(res, 409, { ok: false, message: "A third-party profile save is already in progress." }, req);
+      }
+      upstreamSaveInProgress = true;
       upstreamTestGeneration += 1;
-      const testEvidence = upstreamTestEvidence;
+      let testEvidence = upstreamTestEvidence;
       upstreamTestEvidence = null;
       let saveSnapshots = null;
       try {
@@ -2468,30 +2567,83 @@ export function createAntiCodexManagerService(options = {}) {
             message: "模型切换请在聊天输入框的模型菜单中完成；Manager 只保存第三方配置。",
           }, req);
         }
+        const requestedModel = String(body.model || "").trim();
+        let savedRuntime = requestedModel ? {} : readSavedUpstreamProfileMetadata(stateRoot);
         let apiKey = String(body.apiKey || "");
         if (!apiKey) {
-          const savedRuntime = await runUpstreamProfileScript("GetRuntime", {}, stateRoot, scriptsRoot);
-          apiKey = String(savedRuntime.apiKey || "");
+          savedRuntime = {
+            ...savedRuntime,
+            ...await runUpstreamProfileScript("GetRuntime", {}, stateRoot, scriptsRoot),
+          };
+          const savedKey = String(savedRuntime.apiKey || "");
+          const endpointProfile = {
+            protocol: body.protocol,
+            baseUrl: body.baseUrl,
+            apiKey: savedKey,
+            model: requestedModel || String(savedRuntime.model || "").trim(),
+          };
+          if (!savedKey) {
+            throw new Error("The saved provider API key is unavailable.");
+          }
+          if (!sameNormalizedUpstreamProvider(endpointProfile, savedRuntime)) {
+            throw new Error("Provider API key is required for a different provider endpoint.");
+          }
+          apiKey = savedKey;
         }
-        const selectedModel = String(body.model || "").trim() || String(testEvidence?.resolvedModel || "").trim();
+        const evidenceModels = Array.isArray(testEvidence?.models) ? testEvidence.models : [];
+        let selectedModel = requestedModel;
+        if (!selectedModel && testEvidence) {
+          selectedModel = resolveThirdPartyModel(evidenceModels, savedRuntime.model)
+            || String(testEvidence.resolvedModel || "").trim();
+        }
         const profile = {
           protocol: body.protocol,
           baseUrl: body.baseUrl,
           apiKey,
-          model: selectedModel,
+          model: selectedModel || String(savedRuntime.model || "").trim(),
         };
         const testEvidenceFresh = Boolean(testEvidence && testEvidence.expiresAt >= Date.now() && selectedModel);
         let testEvidenceMatches = false;
         if (testEvidenceFresh) {
-          testEvidenceMatches = testEvidence.fingerprint === upstreamTestFingerprint(profile, body.contextWindow)
-            || (
-              Array.isArray(testEvidence.allowedModels)
+          try {
+            testEvidenceMatches = Array.isArray(testEvidence.allowedModels)
               && testEvidence.allowedModels.includes(selectedModel)
               && testEvidence.endpointFingerprint === upstreamEndpointFingerprint(profile, body.contextWindow)
-            );
+              && (requestedModel
+                ? (testEvidence.discoveryOnly === true
+                  || testEvidence.fingerprint === upstreamTestFingerprint(profile, body.contextWindow))
+                : testEvidence.discoveryOnly === true);
+          } catch {
+            testEvidenceMatches = false;
+          }
         }
         if (!testEvidenceMatches) {
-          return jsonResponse(res, 400, { ok: false, message: "请先完成“测试连通”，确认接口可用后再保存。" }, req);
+          const discoveredModels = await discoverCodexPlusPlusUpstreamModels(profile, {
+            timeoutMs: managerUpstreamTimeoutMs(body.timeoutMs),
+          });
+          if (discoveredModels.length === 0) {
+            throw new Error("The provider returned no usable model IDs; the saved profile was left unchanged.");
+          }
+          if (requestedModel && !discoveredModels.includes(requestedModel)) {
+            throw new Error("The selected provider model is not in the current model listing.");
+          }
+          selectedModel = resolveThirdPartyModel(discoveredModels, savedRuntime.model, requestedModel);
+          if (!selectedModel) {
+            throw new Error("No provider model is available to use as the relay default.");
+          }
+          const resolvedProfile = { ...profile, model: selectedModel };
+          const stages = sanitizedConnectionStages(modelListingStages(discoveredModels));
+          testEvidence = {
+            fingerprint: upstreamTestFingerprint(resolvedProfile, body.contextWindow),
+            endpointFingerprint: upstreamEndpointFingerprint(resolvedProfile, body.contextWindow),
+            resolvedModel: selectedModel,
+            models: discoveredModels,
+            discoveryOnly: true,
+            allowedModels: uniqueModelIds([selectedModel, ...discoveredModels]),
+            stages,
+            expiresAt: Date.now() + UPSTREAM_TEST_EVIDENCE_TTL_MS,
+          };
+          testEvidenceMatches = true;
         }
         const stages = testEvidence.stages;
         const testStatus = "success";
@@ -2532,6 +2684,8 @@ export function createAntiCodexManagerService(options = {}) {
           catch (rollbackError) { error.message += ` Rollback failed: ${rollbackError.message}`; }
         }
         return jsonResponse(res, error.statusCode || 400, { ok: false, message: error.message }, req);
+      } finally {
+        upstreamSaveInProgress = false;
       }
     }
 

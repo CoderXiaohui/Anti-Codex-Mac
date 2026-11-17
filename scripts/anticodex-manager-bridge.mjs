@@ -59,7 +59,7 @@ function httpJson(url, options = {}) {
         let json = null;
         try { json = text ? JSON.parse(text) : null; } catch {}
         if (response.statusCode < 200 || response.statusCode >= 300) {
-          const error = new Error(json?.error?.message || text || `HTTP ${response.statusCode}`);
+          const error = new Error(json?.error?.message || json?.message || text || `HTTP ${response.statusCode}`);
           error.statusCode = response.statusCode;
           reject(error);
           return;

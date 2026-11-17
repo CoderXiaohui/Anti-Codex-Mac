@@ -481,39 +481,41 @@ test("gives Cascade startup a bounded 60 second default while preserving explici
   );
 });
 
-for (const outcome of ["recovered", "exhausted"]) {
-  test("waits for the same native 429 retry to finish when " + outcome, async () => {
-    let reads = 0;
-    const attempt = (number) => ({
-      type: "CORTEX_STEP_TYPE_ERROR_MESSAGE",
-      status: "CORTEX_STEP_STATUS_DONE",
-      errorMessage: { error: { shortError: "API error (attempt " + number + "): RESOURCE_EXHAUSTED (code 429)" } },
+for (const [statusCode, upstreamStatus] of [[429, "RESOURCE_EXHAUSTED"], [503, "UNAVAILABLE"]]) {
+  for (const outcome of ["recovered", "exhausted"]) {
+    test("waits for the same native " + statusCode + " retry to finish when " + outcome, async () => {
+      let reads = 0;
+      const attempt = (number) => ({
+        type: "CORTEX_STEP_TYPE_ERROR_MESSAGE",
+        status: "CORTEX_STEP_STATUS_DONE",
+        errorMessage: { error: { shortError: "API error (attempt " + number + "): " + upstreamStatus + " (code " + statusCode + ")" } },
+      });
+      const service = fakeService({
+        GetAvailableModels: () => jsonResponse(modelPayload()),
+        StartCascade: () => jsonResponse({ cascadeId: "same-cascade" }),
+        SendUserCascadeMessage: () => jsonResponse({}),
+        WaitForConversationFullyIdle: () => jsonResponse({}),
+        GetCascadeTrajectory: () => {
+          const running = ++reads <= 2;
+          const steps = [attempt(1)];
+          if (!running) steps.push(outcome === "exhausted" ? attempt(2) : completedTrajectory("retried").trajectory.steps[1]);
+          return jsonResponse({ status: running ? "CASCADE_RUN_STATUS_RUNNING" : "CASCADE_RUN_STATUS_IDLE", trajectory: { steps } });
+        },
+        CancelCascadeInvocation: () => jsonResponse({}),
+      });
+      const client = clientFor(service.fetch);
+      const turn = collect(client.start({ model: "gemini-pro-agent", userText: "hello", tools: [] }));
+      if (outcome === "recovered") {
+        assert.ok((await turn).some((event) => event.delta === "retried"));
+        assert.equal(service.calls.filter(({ method }) => method === "CancelCascadeInvocation").length, 0);
+      } else {
+        await assert.rejects(turn, (error) => error.statusCode === statusCode && error.message.includes("attempt 2"));
+      }
+      for (const method of ["StartCascade", "SendUserCascadeMessage"]) {
+        assert.equal(service.calls.filter((call) => call.method === method).length, 1);
+      }
     });
-    const service = fakeService({
-      GetAvailableModels: () => jsonResponse(modelPayload()),
-      StartCascade: () => jsonResponse({ cascadeId: "same-cascade" }),
-      SendUserCascadeMessage: () => jsonResponse({}),
-      WaitForConversationFullyIdle: () => jsonResponse({}),
-      GetCascadeTrajectory: () => {
-        const running = ++reads <= 2;
-        const steps = [attempt(1)];
-        if (!running) steps.push(outcome === "exhausted" ? attempt(2) : completedTrajectory("retried").trajectory.steps[1]);
-        return jsonResponse({ status: running ? "CASCADE_RUN_STATUS_RUNNING" : "CASCADE_RUN_STATUS_IDLE", trajectory: { steps } });
-      },
-      CancelCascadeInvocation: () => jsonResponse({}),
-    });
-    const client = clientFor(service.fetch);
-    const turn = collect(client.start({ model: "gemini-pro-agent", userText: "hello", tools: [] }));
-    if (outcome === "recovered") {
-      assert.ok((await turn).some((event) => event.delta === "retried"));
-      assert.equal(service.calls.filter(({ method }) => method === "CancelCascadeInvocation").length, 0);
-    } else {
-      await assert.rejects(turn, (error) => error.statusCode === 429 && error.message.includes("attempt 2"));
-    }
-    for (const method of ["StartCascade", "SendUserCascadeMessage"]) {
-      assert.equal(service.calls.filter((call) => call.method === method).length, 1);
-    }
-  });
+  }
 }
 
 test("lazy desktop startup is exclusive to chat and respects cancellation before model dispatch", async () => {

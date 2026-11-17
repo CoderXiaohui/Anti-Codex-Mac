@@ -268,12 +268,9 @@ test("Manager third-party form saves configuration without switching the active 
   const block = managerInject.slice(start, end);
 
   assert.ok(/text:\s*"保存配置"/.test(block), "third-party form is missing 保存配置");
-  assert.ok(block.includes("配置已保存，可在聊天输入框的模型菜单选择第三方模型。"), "third-party form is missing saved guidance");
-  assert.match(
-    block,
-    /placeholder:\s*saved\.keyConfigured\s*\?\s*`已保存 · \$\{saved\.keyHint\}，留空沿用旧 key`\s*:\s*"请输入 API key"/,
-    "configured third-party key does not show its masked suffix"
-  );
+  assert.ok(block.includes("可在聊天输入框中选择。"), "third-party form is missing saved guidance");
+  assert.match(block, /type: "password", placeholder: hasSavedKey \? "留空沿用已保存的密钥"/);
+  assert.doesNotMatch(block, /row\("模型名|默认测试模型/);
   for (const [label, forbidden] of [
     ["保存并切换", /保存并切换/],
     ["恢复 Antigravity", /恢复 Antigravity/],
@@ -294,8 +291,8 @@ test("Manager third-party setup is brought into view with a clear save workflow"
   assert.match(block, /setResultCardMode\("upstream-config"\)/);
   assert.match(block, /resultCard\.scrollIntoView\(\{ block: "start", inline: "nearest" \}\)/);
   assert.match(block, /className: "anticodex-form-actions"/);
-  assert.match(block, /className: "anticodex-form-hint"/);
-  assert.match(block, /\u5148\u6d4b\u8bd5\u8fde\u901a/);
+  assert.match(block, /保存时会拉取全部模型/);
+  assert.match(block, /text: "拉取模型"/);
   assert.match(managerInject, /\.anticodex-form-actions button\{[^}]*min-height:40px/);
   assert.match(managerInject, /\.anticodex-result-card\{[^}]*scroll-margin-top:78px/);
 });
@@ -317,35 +314,52 @@ test("Manager mobile header keeps command labels horizontal", () => {
   assert.match(mobileCss, /\.anticodex-close\{[^}]*min-width:72px;width:72px/);
 });
 
-test("Manager reuses one successful upstream test for save and invalidates it after edits", () => {
-  const start = managerInject.indexOf("async function showUpstreamConfig()");
-  const end = managerInject.indexOf("function installActions()", start);
-  const block = managerInject.slice(start, end);
-  const testStart = block.indexOf("testButton.onclick");
-  const saveStart = block.indexOf("saveButton.onclick", testStart);
-  const saveEnd = block.indexOf("\n      refreshUpstreamConfigControls();", saveStart);
-  const testHandler = block.slice(testStart, saveStart);
-  const saveHandler = block.slice(saveStart, saveEnd);
-
-  assert.match(testHandler, /managerPostJson\("\/anticodex\/upstream-test"/);
-  assert.match(testHandler, /testedFingerprint = payload\.ok === true \? requestFingerprint : ""/);
-  assert.match(saveHandler, /testedFingerprint !== upstreamConfigFingerprint\(\)/);
-  assert.match(saveHandler, /managerPostJson\("\/anticodex\/upstream-profile"/);
-  assert.doesNotMatch(saveHandler, /\/anticodex\/upstream-test/);
-
-  const controlsStart = block.indexOf("const refreshUpstreamConfigControls");
-  const controlsEnd = block.indexOf("const setUpstreamConfigBusy", controlsStart);
-  const controlsBlock = block.slice(controlsStart, controlsEnd);
-  assert.match(controlsBlock, /const fingerprintMatches = Boolean\(testedFingerprint\) && testedFingerprint === upstreamConfigFingerprint\(\)/);
-  assert.match(controlsBlock, /saveButton\.disabled = upstreamConfigOperationInFlight \|\| !fingerprintMatches/);
-
-  const invalidateStart = block.indexOf("const invalidateConnectionTest");
-  const invalidateEnd = block.indexOf("const upstreamConnectionSummaryText", invalidateStart);
-  const invalidateBlock = block.slice(invalidateStart, invalidateEnd);
-  assert.match(invalidateBlock, /testedFingerprint = ""/);
-  assert.match(invalidateBlock, /refreshUpstreamConfigControls\(\)/);
-  assert.match(invalidateBlock, /field\.addEventListener\("input", invalidateConnectionTest\)/);
-  assert.match(invalidateBlock, /field\.addEventListener\("change", invalidateConnectionTest\)/);
+test("Manager saves a provider directly without asking for a model", async () => {
+  const nodes = [];
+  const posts = [];
+  let refreshedMenus = 0;
+  const setup = vm.runInNewContext("(async " + extractNamedFunction(managerInject, "showUpstreamConfig") + ")", {
+    setResultCardMode() {},
+    ensureSnapshotForLoad: async () => {},
+    safeJson: async () => ({ ok: true, value: { saved: {
+      protocol: "responses", baseUrl: "http://127.0.0.1:5000/v1", keyConfigured: true,
+      model: "old-default", capabilities: { providerModels: ["old-default"] },
+    } } }),
+    el(tag, attrs = {}, children = []) {
+      const node = {
+        ...attrs, tag, children, value: attrs.value ?? "", textContent: attrs.text ?? "", disabled: false,
+        addEventListener() {}, checkValidity() { return true; }, classList: { toggle() {} },
+      };
+      nodes.push(node);
+      return node;
+    },
+    runManagerExclusive: (fn) => fn(),
+    async managerPostJson(endpoint, body) {
+      posts.push({ endpoint, body });
+      return { ok: true, providerModels: ["first", "second"], models: ["first", "second"] };
+    },
+    UPSTREAM_TEST_TIMEOUT_MS: 1000,
+    window: {},
+    result: { classList: { remove() {} }, replaceChildren() {} },
+    resultCard: { scrollIntoView() {} },
+    syncClientModelCatalog() { refreshedMenus++; },
+  });
+  await setup();
+  assert.deepEqual(nodes.filter(({ tag }) => tag === "input").map(({ value }) => value), [
+    "http://127.0.0.1:5000/v1", "272000", "",
+  ]);
+  const save = nodes.find((node) => node.text === "保存配置");
+  assert.equal(save.disabled, false);
+  await save.onclick();
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].endpoint, "/anticodex/upstream-profile");
+  assert.equal(posts[0].body.protocol, "responses");
+  assert.equal(Object.hasOwn(posts[0].body, "model"), false);
+  assert.equal(refreshedMenus, 1);
+  assert.match(nodes.find((node) => node.role === "status").textContent, /已保存 2 个模型/);
+  await nodes.find((node) => node.text === "拉取模型").onclick();
+  assert.equal(posts[1].endpoint, "/anticodex/upstream-test");
+  assert.equal(Object.hasOwn(posts[1].body, "model"), false);
 });
 
 test("Manager account and proxy check is no-traffic and returns a readable result", () => {
@@ -2080,8 +2094,8 @@ test("Manager correlates fresh background reports and keeps their final result v
 });
 
 test("current Manager UI exposes no legacy session-controller action", () => {
-  assert.match(managerInject, /const VERSION = "native-panel-v122"/);
-  assert.match(managerOpenInject, /__ANTICODEX_MANAGER_VERSION__ === "native-panel-v122"/);
+  assert.match(managerInject, /const VERSION = "native-panel-v123"/);
+  assert.match(managerOpenInject, /__ANTICODEX_MANAGER_VERSION__ === "native-panel-v123"/);
   assert.match(managerInject, /\.anticodex-head\{[^}]*position:sticky;top:0;z-index:3;background:var\(--ac-bg\)/);
   for (const [name, text] of Object.entries({
     source,
@@ -2255,5 +2269,5 @@ test("Manager overlay does not close on backdrop clicks and omits the unused ext
   assert.match(managerInject, /type:\s*"codex-app-server-restart"/);
   const upstreamConfigBlock = extractNamedFunction(managerInject, "showUpstreamConfig");
   assert.match(upstreamConfigBlock, /syncClientModelCatalog\(\)/);
-  assert.match(upstreamConfigBlock, /已拉取该 API 支持的/);
+  assert.match(upstreamConfigBlock, /已拉取/);
 });
