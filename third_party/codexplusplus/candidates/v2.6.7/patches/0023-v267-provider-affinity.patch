@@ -1,0 +1,150 @@
+diff --git a/crates/codex-plus-core/src/protocol_proxy.rs b/crates/codex-plus-core/src/protocol_proxy.rs
+index a66006b..4c47a4a 100644
+--- a/crates/codex-plus-core/src/protocol_proxy.rs
++++ b/crates/codex-plus-core/src/protocol_proxy.rs
+@@ -3762,6 +3762,10 @@ async fn open_responses_proxy_request_with_extensions(
+ 
+ /// 拓展网关中间件拒绝了这一步：回一个 Codex 能显示原因的 400 错误。
+ fn extension_rejected_response(reason: &str) -> anyhow::Result<UpstreamProxyResponse> {
++    invalid_request_response("extension_rejected", reason)
++}
++
++fn invalid_request_response(code: &str, reason: &str) -> anyhow::Result<UpstreamProxyResponse> {
+     Ok(UpstreamProxyResponse {
+         response_history: None,
+         status_code: 400,
+@@ -3772,7 +3776,7 @@ fn extension_rejected_response(reason: &str) -> anyhow::Result<UpstreamProxyResp
+         compaction: false,
+         native_compaction_passthrough: false,
+         buffered_body: Some(serde_json::to_vec(&json!({
+-            "error": { "type": "invalid_request_error", "code": "extension_rejected", "message": reason }
++            "error": { "type": "invalid_request_error", "code": code, "message": reason }
+         }))?),
+         stream_prefix: Vec::new(),
+         request_trace: None,
+@@ -3808,6 +3812,14 @@ async fn open_responses_proxy_request_once(
+             .find(|(name, _)| name.eq_ignore_ascii_case(CODEX_TURN_METADATA_KEY))
+             .map(|(_, value)| value.as_str())
+     });
++    if anticodex::is_unbound_desktop_title(&settings, &request_json, turn_metadata) {
++        // The desktop supplies its global helper model here, even for a different chat provider.
++        // Its built-in provisional title stays in place when generation is unavailable.
++        return invalid_request_response(
++            "missing_title_provider",
++            "The desktop did not supply the conversation provider for this automatic title.",
++        );
++    }
+     align_codex_compaction_model_with_live_selection(&settings, &mut request_json, turn_metadata);
+     let local_compaction_request = !is_responses_compact_proxy_path(request_path)
+         && !request_has_compaction_trigger(&request_json)
+@@ -6132,7 +6144,10 @@ pub async fn open_chat_completions_proxy_request(
+     original_user_agent: Option<&str>,
+ ) -> anyhow::Result<UpstreamProxyResponse> {
+     let settings = SettingsStore::default().load().unwrap_or_default();
+-    let relay = settings.active_relay_profile();
++    let mut request_json: Value = serde_json::from_str(body)?;
++    let directed = select_anticodex_relay_for_model(&settings, &mut request_json)?;
++    let has_model_route = directed.is_some();
++    let relay = directed.unwrap_or_else(|| settings.active_relay_profile());
+     if relay.protocol != RelayProtocol::ChatCompletions {
+         anyhow::bail!("当前中转未启用 Chat Completions 协议代理");
+     }
+@@ -6143,20 +6158,21 @@ pub async fn open_chat_completions_proxy_request(
+         anyhow::bail!("Chat Completions 上游 Key 不能为空");
+     }
+ 
+-    let mut request_json: Value = serde_json::from_str(body)?;
+     // 与 Responses 路径同规则的目录外模型映射（#1183/#1446/#1457）：
+     // 这条直通路径此前对模型名零干预，后台任务的 gpt-* 原样打到上游。
+-    let requested_model = request_json
+-        .get("model")
+-        .and_then(Value::as_str)
+-        .unwrap_or_default()
+-        .to_string();
+-    // 自动审批模型优先于目录外映射（与 Responses 路径的 upstream_request_parts 一致）。
+-    if let Some(auto_review_model) = auto_review_model_rewrite(&relay, &requested_model) {
+-        request_json["model"] = json!(auto_review_model);
+-    } else if let Some(replacement) = unlisted_model_replacement(&settings, &requested_model) {
+-        log_unlisted_model_mapping(&requested_model, &replacement);
+-        request_json["model"] = Value::String(replacement);
++    if !has_model_route {
++        let requested_model = request_json
++            .get("model")
++            .and_then(Value::as_str)
++            .unwrap_or_default()
++            .to_string();
++        // 自动审批模型优先于目录外映射（与 Responses 路径的 upstream_request_parts 一致）。
++        if let Some(auto_review_model) = auto_review_model_rewrite(&relay, &requested_model) {
++            request_json["model"] = json!(auto_review_model);
++        } else if let Some(replacement) = unlisted_model_replacement(&settings, &requested_model) {
++            log_unlisted_model_mapping(&requested_model, &replacement);
++            request_json["model"] = Value::String(replacement);
++        }
+     }
+     let is_stream = request_json
+         .get("stream")
+diff --git a/crates/codex-plus-core/src/protocol_proxy/anticodex.rs b/crates/codex-plus-core/src/protocol_proxy/anticodex.rs
+index 7b80799..16452b0 100644
+--- a/crates/codex-plus-core/src/protocol_proxy/anticodex.rs
++++ b/crates/codex-plus-core/src/protocol_proxy/anticodex.rs
+@@ -91,6 +91,27 @@ pub(crate) fn codex_turn_metadata_value(
+     }
+ }
+ 
++pub(crate) fn is_unbound_desktop_title(
++    settings: &BackendSettings,
++    request: &Value,
++    turn_metadata: Option<&str>,
++) -> bool {
++    let profiles = &settings.relay_profiles;
++    if !profiles
++        .iter()
++        .any(|p| p.id == ANTICODEX_THIRD_PARTY_RELAY_ID)
++        || !profiles
++            .iter()
++            .any(|p| p.id == ANTICODEX_ANTIGRAVITY_RELAY_ID)
++    {
++        return false;
++    }
++    codex_turn_metadata_value(request, turn_metadata).is_some_and(|meta| {
++        meta.get("thread_source").and_then(Value::as_str) == Some("thread_title")
++            || meta.get("turn_trigger").and_then(Value::as_str) == Some("thread_title")
++    })
++}
++
+ pub(crate) fn codex_compaction_thread_id(
+     request_json: &Value,
+     turn_metadata: Option<&str>,
+@@ -304,6 +325,32 @@ mod anticodex_compaction_selection_tests {
+         json!({"request_kind": "compaction", "thread_id": THREAD}).to_string()
+     }
+ 
++    #[test]
++    fn desktop_title_has_no_owner_in_dual_provider_mode() {
++        let mut settings = BackendSettings::default();
++        settings.relay_profiles = [
++            ANTICODEX_ANTIGRAVITY_RELAY_ID,
++            ANTICODEX_THIRD_PARTY_RELAY_ID,
++        ]
++        .map(|id| RelayProfile {
++            id: id.to_owned(),
++            ..Default::default()
++        })
++        .to_vec();
++        let title = json!({"thread_source":"thread_title","turn_trigger":"thread_title"});
++        let body = json!({"client_metadata": {CODEX_TURN_METADATA_KEY: title.to_string()}});
++        assert!(is_unbound_desktop_title(&settings, &body, None));
++        assert!(is_unbound_desktop_title(
++            &settings,
++            &Value::Null,
++            Some(&title.to_string())
++        ));
++        let ordinary = json!({"input":"thread_title","client_metadata":{CODEX_TURN_METADATA_KEY:{"thread_source":"user","turn_trigger":"composer"}}});
++        assert!(!is_unbound_desktop_title(&settings, &ordinary, None));
++        settings.relay_profiles.pop();
++        assert!(!is_unbound_desktop_title(&settings, &body, None));
++    }
++
+     #[test]
+     fn http_compaction_metadata_uses_current_thread_over_old_routable_request() {
+         let temp = tempfile::tempdir().unwrap();

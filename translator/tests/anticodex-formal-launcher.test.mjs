@@ -554,19 +554,10 @@ test("launcher gives an auto-started Antigravity desktop durable output handles"
   assert.match(launcher, /Get-CimInstance Win32_Process/);
 });
 
-test("launchers prewarm installed Antigravity for a later native model-menu switch", () => {
-  assert.match(
-    taskLauncherSource,
-    /await ensureAntigravityDesktop\(plan, env, \{ required: plan\.provider === "antigravity" \}\)/,
-  );
-  assert.doesNotMatch(
-    taskLauncherSource,
-    /if \(plan\.provider === "antigravity"\) \{\s*const desktopPath = await ensureAntigravityDesktop/,
-  );
-  assert.match(
-    launcher,
-    /Ensure-AntigravityDesktop -StateRoot \$stateRoot -Optional:\(\$selection\.provider -ne "antigravity"\)/,
-  );
+test("third-party launch leaves Antigravity Desktop closed until a native request needs it", () => {
+  assert.match(taskLauncherSource, /plan\.provider === "antigravity"\s*\? await ensureAntigravityDesktop/);
+  assert.match(launcher, /if \(\$selection\.provider -eq "antigravity"\) \{\s*Ensure-AntigravityDesktop/);
+  assert.doesNotMatch(launcher, /Ensure-AntigravityDesktop[^\n]+-Optional/);
 });
 
 test("Antigravity fixed route preserves native UI model selection", () => {

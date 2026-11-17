@@ -632,8 +632,7 @@ function Invoke-AntiCodexFixedRouteShutdown {
 
 function Ensure-AntigravityDesktop {
     param(
-        [Parameter(Mandatory = $true)][string]$StateRoot,
-        [switch]$Optional
+        [Parameter(Mandatory = $true)][string]$StateRoot
     )
     $desktopHelper = Join-Path $PSScriptRoot "antigravity-desktop.ps1"
     if (-not (Test-Path -LiteralPath $desktopHelper -PathType Leaf)) {
@@ -648,17 +647,10 @@ function Ensure-AntigravityDesktop {
     }
     $antigravityPath = Resolve-AntigravityDesktopPath
     if (-not $antigravityPath) {
-        if ($Optional) { return }
         throw "Antigravity Desktop is not running and no installed executable was found."
     }
     $env:ANTIGRAVITY_DESKTOP_PATH = $antigravityPath
-    try {
-        Start-AntigravityDesktop -ExecutablePath $antigravityPath -StateRoot $StateRoot | Out-Null
-    } catch {
-        if ($Optional) { return }
-        throw
-    }
-    if ($Optional) { return }
+    Start-AntigravityDesktop -ExecutablePath $antigravityPath -StateRoot $StateRoot | Out-Null
     $startup = Wait-AntigravityDesktopStable -ExecutablePath $antigravityPath -TimeoutSeconds 30 -StableSeconds 8
     if (-not $startup.Stable) {
         throw "Antigravity Desktop did not remain running long enough for Anti-Codex."
@@ -977,7 +969,9 @@ Write-AntiCodexLauncherState -Stage "loading-provider"
 $runtimeProfile = Read-AntiCodexRuntimeProfile -StateRoot $stateRoot
 $nativeSelection = Read-AntiCodexNativeSelection -CodexHome $env:CODEX_HOME_DIR
 $selection = Set-AntiCodexProviderEnvironment -RuntimeProfile $runtimeProfile -NativeSelection $nativeSelection
-Ensure-AntigravityDesktop -StateRoot $stateRoot -Optional:($selection.provider -ne "antigravity")
+if ($selection.provider -eq "antigravity") {
+    Ensure-AntigravityDesktop -StateRoot $stateRoot
+}
 Write-AntiCodexLauncherState -Stage "checking-running-client" -Message "$($selection.provider):$($selection.model)"
 
 $runningMain = Get-RunningAntiCodexMain -MainExecutable $mainExecutable

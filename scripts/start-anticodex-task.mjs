@@ -509,7 +509,7 @@ function tasklistContains(executableName, env) {
   return result.status === 0 && String(result.stdout ?? "").toLowerCase().includes(`"${executableName.toLowerCase()}"`);
 }
 
-async function ensureAntigravityDesktop(plan, env, { required = true } = {}) {
+export async function ensureAntigravityDesktop(stateRoot, env) {
   if (tasklistContains("Antigravity.exe", env) || tasklistContains("Antigravity IDE.exe", env)) {
     return text(env.ANTIGRAVITY_DESKTOP_PATH);
   }
@@ -520,12 +520,11 @@ async function ensureAntigravityDesktop(plan, env, { required = true } = {}) {
   ].filter(Boolean);
   const executable = candidates.find((candidate) => existsSync(candidate));
   if (!executable) {
-    if (!required) return null;
     throw new Error("Antigravity Desktop is not running and no installed executable was found.");
   }
 
-  const stdout = openSync(join(plan.stateRoot, "antigravity-desktop.out.log"), "a");
-  const stderr = openSync(join(plan.stateRoot, "antigravity-desktop.err.log"), "a");
+  const stdout = openSync(join(stateRoot, "antigravity-desktop.out.log"), "a");
+  const stderr = openSync(join(stateRoot, "antigravity-desktop.err.log"), "a");
   try {
     const child = spawn(executable, [], {
       detached: true,
@@ -533,14 +532,15 @@ async function ensureAntigravityDesktop(plan, env, { required = true } = {}) {
       stdio: ["ignore", stdout, stderr],
       windowsHide: false,
     });
-    if (!required) child.once("error", () => {});
+    await new Promise((resolveStarted, reject) => {
+      child.once("error", reject);
+      child.once("spawn", resolveStarted);
+    });
     child.unref();
   } finally {
     closeSync(stdout);
     closeSync(stderr);
   }
-
-  if (!required) return executable;
 
   let stableSince = 0;
   const deadline = Date.now() + ANTIGRAVITY_START_TIMEOUT_MS;
@@ -634,7 +634,9 @@ export async function runTaskLauncher(options = {}) {
   try {
     const startedAt = new Date().toISOString();
     writeLauncherState(plan, startedAt, "initializing");
-    const desktopPath = await ensureAntigravityDesktop(plan, env, { required: plan.provider === "antigravity" });
+    const desktopPath = plan.provider === "antigravity"
+      ? await ensureAntigravityDesktop(plan.stateRoot, env)
+      : null;
     if (await fixedRouteReady()) {
       writeLauncherState(plan, startedAt, "ready", "ready", "existing fixed route");
       return { ok: true, reused: true };

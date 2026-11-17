@@ -104,12 +104,11 @@ test("a missing local Worker is reported without blocking the remaining shared M
 
 test("cold Antigravity startup gets the existing desktop warmup budget without delaying third-party startup", () => {
   const source = readFileSync(supervisorPath, "utf8");
-  const start = source.indexOf("const antigravityClient = createAntigravityCascadeClient()");
+  const start = source.indexOf("const antigravityClient = createAntigravityCascadeClient(");
   const end = source.indexOf("provider = await startAntigravityChatProvider", start);
-  assert.ok(start >= 0 && end > start);
   const block = source.slice(start, end);
-
-  assert.match(block, /getReadiness\(\s*plan\.provider === "antigravity"\s*\? \{ timeoutMs: 90_000 \}\s*: undefined,?\s*\)/);
+  assert.ok(start >= 0 && end > start);
+  assert.match(block, /if \(plan\.provider === "antigravity"\) \{\s*const readiness = await antigravityClient.getReadiness\(\{ timeoutMs: 90_000 \}\)/);
   assert.match(block, /listModels\(\)/);
   assert.doesNotMatch(block, /listModels\(\{ timeoutMs:/);
 });

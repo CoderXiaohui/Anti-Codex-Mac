@@ -95,6 +95,8 @@ The native Codex frontend is authoritative for provider and model selection. Ant
 
 Both Anti-Codex relay profiles remain configured and resident for the copied client's lifetime. Selecting a model routes the next request to the matching relay without restarting the copied client, the CodexPlusPlus helper, the fixed-route owner or the current native task. A provider failure must fail on that provider; it must not spend another provider through fallback rotation.
 
+The copied desktop currently assigns automatic titles a separate thread and a global model. With both providers configured, CodexPlusPlus rejects these unbound title requests locally. Codex keeps the first line as the provisional title. Regular chat, explicit model switches, and manual renaming continue normally.
+
 CodexPlusPlus responsibilities:
 
 - launch the official desktop application without patching its installed files;

@@ -747,6 +747,36 @@ export function trafficSuggestion(statusCode, category) {
   return "Review the request and the local provider response.";
 }
 
+export function nativeTurnError(payload, minimumStepIndex = -1) {
+  const steps = payload?.trajectory?.steps ?? payload?.steps ?? [];
+  let recovered = false;
+  for (let index = steps.length - 1; index > minimumStepIndex; index -= 1) {
+    const step = steps[index];
+    const details = step?.errorMessage?.error ?? step?.error ?? {};
+    const message = [
+      step?.errorMessage,
+      step?.plannerResponse?.errorMessage,
+      details?.shortError,
+      details?.modelErrorMessage,
+      details?.userErrorMessage,
+      details?.message,
+    ].find((candidate) => typeof candidate === "string" && candidate.trim());
+    if (message) {
+      const attempt = /^API error \(attempt \d+\):.*(?:RESOURCE_EXHAUSTED|\b(?:429|502|503|504)\b)/i.test(message.trim());
+      if (recovered && attempt) return null;
+      return {
+        message: message.trim(),
+        retrying: attempt && (payload?.status ?? payload?.trajectory?.status) === "CASCADE_RUN_STATUS_RUNNING",
+      };
+    }
+    if (step?.status !== "CORTEX_STEP_STATUS_FAILED" && step?.status !== "CORTEX_STEP_STATUS_ERROR") {
+      recovered ||= Boolean(step?.plannerResponse?.response || step?.plannerResponse?.modifiedResponse
+        || step?.mcpTool?.toolCall?.name || (step?.type === "CORTEX_STEP_TYPE_GENERIC" && step?.metadata?.toolCall?.name));
+    }
+  }
+  return null;
+}
+
 export function mapAntigravityProviderError(error, ErrorType) {
   if (error instanceof ErrorType) return error;
   const message = String(error?.message ?? error ?? "Antigravity request failed.");

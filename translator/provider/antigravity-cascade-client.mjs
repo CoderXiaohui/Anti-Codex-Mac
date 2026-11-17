@@ -16,6 +16,7 @@ import {
 import {
   DEFAULT_TOOL_CONTINUATION_TIMEOUT_MS,
   estimatePromptTokens,
+  nativeTurnError,
   renderBoundedSystemPromptSections as renderSystemPromptSections,
 } from "../antigravity-contract.mjs";
 export { estimatePromptTokens };
@@ -108,6 +109,10 @@ export function createAntigravityCascadeClient(options = {}) {
   async function* start(request = {}) {
     const signal = request.signal;
     throwIfAborted(signal);
+    if (options.beforeStart) {
+      await options.beforeStart();
+      throwIfAborted(signal);
+    }
     const timeoutMs = positiveInteger(request.timeoutMs, defaultTimeoutMs);
     const modelEntries = await listModels({ signal, timeoutMs: request.modelTimeoutMs });
     const model = resolveModel(modelEntries, request.model);
@@ -331,6 +336,7 @@ async function* observeCascade(continuation, options) {
   let idleError = null;
   let idlePromise = null;
   let transientIdleRetries = 0;
+  let retryMessage = "";
   const startIdleWatch = () => {
     idle = false;
     idleError = null;
@@ -339,7 +345,7 @@ async function* observeCascade(continuation, options) {
       conversationId: cascadeId,
       inactivityTimeoutSeconds: Math.max(1, Math.ceil(options.timeoutMs / 1000)),
       stabilizationDurationSeconds: 1,
-      returnOnExecutorError: true,
+      returnOnExecutorError: false,
     }, {
       fetchImpl: options.fetchImpl,
       signal: idleController.signal,
@@ -358,6 +364,7 @@ async function* observeCascade(continuation, options) {
     while (true) {
       throwIfAborted(options.signal);
       if (Date.now() - startedAt > options.timeoutMs) {
+        if (retryMessage) throw classifyTrajectoryError(retryMessage);
         throw new AntigravityCascadeError(`Antigravity timed out after ${options.timeoutMs}ms.`, {
           statusCode: 504,
           name: "TimeoutError",
@@ -371,8 +378,15 @@ async function* observeCascade(continuation, options) {
         signal: options.signal,
         timeoutMs: Math.min(options.timeoutMs, 15000),
       });
-      const trajectoryError = extractTrajectoryError(trajectory, turnFloorStepIndex);
-      if (trajectoryError) throw classifyTrajectoryError(trajectoryError);
+      const error = nativeTurnError(trajectory, turnFloorStepIndex);
+      if (retryMessage && !error && idle) startIdleWatch();
+      retryMessage = error?.retrying ? error.message : "";
+      if (retryMessage) {
+        // Antigravity owns this retry. Poll the existing turn without cancelling or resending it.
+        await sleep(options.pollIntervalMs, options.signal);
+        continue;
+      }
+      if (error) throw classifyTrajectoryError(error.message);
 
       const pending = extractPendingMcpCalls(
         trajectory,
@@ -434,8 +448,13 @@ async function* observeCascade(continuation, options) {
           signal: options.signal,
           timeoutMs: Math.min(options.timeoutMs, 15000),
         });
-        const finalError = extractTrajectoryError(finalTrajectory, turnFloorStepIndex);
-        if (finalError) throw classifyTrajectoryError(finalError);
+        const finalError = nativeTurnError(finalTrajectory, turnFloorStepIndex);
+        if (finalError?.retrying) {
+          retryMessage = finalError.message;
+          await sleep(options.pollIntervalMs, options.signal);
+          continue;
+        }
+        if (finalError) throw classifyTrajectoryError(finalError.message);
         const finalPending = extractPendingMcpCalls(
           finalTrajectory,
           bridge?.tools?.map((tool) => tool.name) ?? [],
@@ -669,24 +688,6 @@ function normalizeUserItems(request) {
 function normalizeFollowUpUserItems(request) {
   const items = Array.isArray(request.userItems) ? request.userItems : [];
   return items.length ? items : [{ text: requiredText(request.userText, "current user text") }];
-}
-
-function extractTrajectoryError(payload, minimumStepIndex = -1) {
-  const steps = payload?.trajectory?.steps ?? payload?.steps ?? [];
-  for (let index = steps.length - 1; index > minimumStepIndex; index -= 1) {
-    const step = steps[index];
-    const details = step?.errorMessage?.error ?? step?.error ?? {};
-    const message = [
-      step?.errorMessage,
-      step?.plannerResponse?.errorMessage,
-      details?.shortError,
-      details?.modelErrorMessage,
-      details?.userErrorMessage,
-      details?.message,
-    ].find((candidate) => typeof candidate === "string" && candidate.trim());
-    if (message) return message.trim();
-  }
-  return "";
 }
 
 function classifyTrajectoryError(message) {

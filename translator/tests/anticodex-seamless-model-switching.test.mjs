@@ -72,7 +72,7 @@ test("CodexPlusPlus keeps Antigravity and third-party relays resident at the sam
   assert.match(settings.relayProfiles[1].modelList, /anticodex\/third-party\/gpt-5\.5/);
 });
 
-test("third-party startup keeps Antigravity as the unknown-model fallback and preserves every saved provider model", () => {
+test("explicit third-party startup uses the selected provider for its default route and preserves saved models", () => {
   const plan = buildFixedRoutePlan([], {
     LOCALAPPDATA: "C:\\Users\\XD\\AppData\\Local",
     APPDATA: "C:\\Users\\XD\\AppData\\Roaming",
@@ -87,8 +87,8 @@ test("third-party startup keeps Antigravity as the unknown-model fallback and pr
   });
   const thirdParty = plan.relayRoutes.find((route) => route.profileId === THIRD_PARTY_RELAY_ID);
 
-  assert.equal(plan.settings.activeRelayId, ANTIGRAVITY_RELAY_ID);
-  assert.equal(plan.settings.relayTestModel, "gemini-3.1-pro-low");
+  assert.equal(plan.settings.activeRelayId, THIRD_PARTY_RELAY_ID);
+  assert.equal(plan.settings.relayTestModel, "gpt-5.6-terra");
   assert.deepEqual(thirdParty.relayModelList, [
     THIRD_PARTY_MODEL_SLOT,
     thirdPartyNativeModel("gpt-5.6-terra"),
@@ -125,7 +125,7 @@ test("one stable native catalog exposes Gemini, Claude and third-party choices t
   const visible = catalog.models.filter((model) => model.visibility === "list");
   const slugs = visible.map((model) => model.slug);
 
-  assert.ok(slugs.includes("gemini-3.1-pro-low"));
+  assert.equal(visible.find((entry) => entry.slug === "gemini-3.1-pro-low").display_name, "Antigravity · Gemini 3.1 Pro (Low)");
   assert.ok(slugs.includes("claude-sonnet-4-6"));
   assert.ok(slugs.includes(ANTIGRAVITY_MODEL_SLOT));
   assert.ok(slugs.includes(THIRD_PARTY_MODEL_SLOT));

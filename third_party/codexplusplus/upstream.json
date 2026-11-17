@@ -6,7 +6,7 @@
   "tag": "v2.6.7",
   "upstreamCommit": "e63ff6c98be7b79b1d8a5983b541ea2bd6cafcfd",
   "isolationPatchCommit": "8dd29e1e52eb24686b8ae8ac3a75d7fc08ae9e02",
-  "patchCommit": "0f90cae62d14172ba97d32d154c488b25492c47d",
+  "patchCommit": "b1b6d0dffc784529af9116b83482605a0b608297",
   "patches": [
     {
       "file": "candidates/v2.6.7/patches/0021-v267-format-normalization.patch",
@@ -17,16 +17,21 @@
       "file": "candidates/v2.6.7/patches/0022-v267-integration.patch",
       "sha256": "0b781660ef43774f343ded02f255279e1891973dc17d8d24c67f83632003405f",
       "scope": "Anti-Codex isolation, protocol compatibility, response history, stack-safe proxy dispatch, and headless launcher integration for v2.6.7"
+    },
+    {
+      "file": "candidates/v2.6.7/patches/0023-v267-provider-affinity.patch",
+      "sha256": "bd621534f56157db79859bfe52cafbc924ce54a9728aab0009bdb8cf40d9ef36",
+      "scope": "Use the selected relay for direct Chat requests and keep unbound desktop titles local when both providers are configured"
     }
   ],
   "verification": {
-    "patchReplay": "2 project patches replayed without automatic conflict resolution; head 0f90cae62d14172ba97d32d154c488b25492c47d; tree cffb2432b0b724d66da8c3426bc99bcf8876390a",
+    "patchReplay": "3 project patches replayed without automatic conflict resolution; head b1b6d0dffc784529af9116b83482605a0b608297; tree ab95b6a503da1e3225ef5439969864c13e8830ed",
     "sourceIsolationAudit": "passed",
-    "auditRegressionTests": "Candidate-local format, protocol proxy, response history (integration and library), native stream forwarding, local helper safeguards and watcher, Manager and launcher checks passed; promoted with full project preflight and installed acceptance.",
+    "auditRegressionTests": "Candidate-local format, protocol proxy, response history (integration and library), native stream forwarding, local helper safeguards and watcher, Manager and launcher checks passed; complete project regression and promotion preflight remain required before replacing accepted upstream.json.",
     "cargoFmt": "passed",
     "cargoCheck": "protocol proxy, response history (integration and library), native stream forwarding, local helper safeguards and watcher tests passed; Windows x64 Manager check passed",
     "windowsNativeTests": "Windows x64 release launcher build passed through the managed project runner",
-    "launcherReleaseBuild": "sha256:e32935032a62988eb37a78122616335b958bd796aec7eadbd9db8c661f56b97f",
-    "runtimeIsolation": "10/10 source compatibility checks; standalone helper runs without a window"
+    "launcherReleaseBuild": "sha256:7cfb6319ced0173e8ac7184a0d7666f7498acbbbabe085a473bb52caddbe490d",
+    "runtimeIsolation": "candidate only; not activated"
   }
 }

@@ -23,6 +23,7 @@ import { createAntigravityCascadeClient } from "../translator/provider/antigravi
 import { readNativeCustomInstructions } from "../translator/provider/anticodex-prompt-policy.mjs";
 import { startAntigravityChatProvider } from "../translator/provider/start-antigravity-chat-provider.mjs";
 import { createAntiCodexManagerService } from "./anticodex-manager-service.mjs";
+import { ensureAntigravityDesktop } from "./start-anticodex-task.mjs";
 import { ownerProcessIsAlive } from "./lib/anticodex-owner-process.mjs";
 import {
   ANTIGRAVITY_MODEL_SLOT,
@@ -812,30 +813,29 @@ async function runSupervisor(plan) {
     const bundledCatalog = readBundledCatalog(plan.paths.codexCli);
     const antigravityCatalogPath = join(plan.paths.codexHome, "antigravity-model-catalog.json");
     const unifiedCatalogPath = join(plan.paths.codexHome, "anticodex-model-catalog.json");
-    const antigravityClient = createAntigravityCascadeClient();
-    let antigravityReady = false;
+    let desktopWarmup;
+    const antigravityClient = createAntigravityCascadeClient({
+      beforeStart: plan.provider === "third-party" ? () => {
+        desktopWarmup ??= ensureAntigravityDesktop(plan.paths.stateRoot, process.env).finally(() => {
+          desktopWarmup = undefined;
+        });
+        return desktopWarmup;
+      } : undefined,
+    });
+    let antigravityReady = null;
     const previousAntigravityCatalog = readCatalogSafely(antigravityCatalogPath) ?? { ...bundledCatalog, models: [] };
     let antigravityCatalog = previousAntigravityCatalog;
-    try {
-      const readiness = await antigravityClient.getReadiness(
-        plan.provider === "antigravity" ? { timeoutMs: 90_000 } : undefined,
-      );
+    if (plan.provider === "antigravity") {
+      const readiness = await antigravityClient.getReadiness({ timeoutMs: 90_000 });
       antigravityReady = readiness?.signedIn === true;
-      if (antigravityReady) {
-        const availableModels = await antigravityClient.listModels();
-        const currentAntigravityCatalog = buildRuntimeCatalogFromBundled(bundledCatalog, availableModels);
-        antigravityCatalog = preserveHiddenCompatibilityModels(currentAntigravityCatalog, previousAntigravityCatalog);
-        writeTextAtomic(antigravityCatalogPath, `${JSON.stringify(antigravityCatalog, null, 2)}\n`);
+      if (!antigravityReady) throw new Error("Antigravity Desktop is not signed in.");
+      const availableModels = await antigravityClient.listModels();
+      const currentAntigravityCatalog = buildRuntimeCatalogFromBundled(bundledCatalog, availableModels);
+      antigravityCatalog = preserveHiddenCompatibilityModels(currentAntigravityCatalog, previousAntigravityCatalog);
+      writeTextAtomic(antigravityCatalogPath, `${JSON.stringify(antigravityCatalog, null, 2)}\n`);
+      if (!antigravityCatalog.models.some((entry) => entry.slug === plan.model)) {
+        throw new Error(`Antigravity model is unavailable: ${plan.model}`);
       }
-    } catch (error) {
-      if (plan.provider === "antigravity") throw error;
-    }
-    if (plan.provider === "antigravity" && !antigravityReady) {
-      throw new Error("Antigravity Desktop is not signed in.");
-    }
-    if (plan.provider === "antigravity"
-        && !antigravityCatalog.models.some((entry) => entry.slug === plan.model)) {
-      throw new Error(`Antigravity model is unavailable: ${plan.model}`);
     }
     provider = await startAntigravityChatProvider({
       client: antigravityClient,
@@ -1718,7 +1718,8 @@ export function buildUnifiedModelCatalog(bundled, options = {}) {
     });
   };
   for (const entry of antigravityModels) {
-    add(entry, entry?.visibility === "hide" ? "hide" : "list");
+    if (!entry?.slug) continue;
+    add({ ...entry, display_name: "Antigravity · " + (entry.display_name || entry.slug) }, entry.visibility === "hide" ? "hide" : "list");
   }
   for (const model of thirdPartyModels) {
     add({

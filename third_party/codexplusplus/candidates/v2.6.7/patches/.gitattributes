@@ -1,0 +1,2 @@
+# Preserve verified bytes and the space marking an empty context line in a unified diff.
+*.patch text eol=lf whitespace=-blank-at-eol
