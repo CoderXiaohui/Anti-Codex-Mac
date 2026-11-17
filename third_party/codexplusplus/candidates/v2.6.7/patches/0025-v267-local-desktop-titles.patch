@@ -1,0 +1,110 @@
+diff --git a/crates/codex-plus-core/src/protocol_proxy.rs b/crates/codex-plus-core/src/protocol_proxy.rs
+index 75a8bc2..b398717 100644
+--- a/crates/codex-plus-core/src/protocol_proxy.rs
++++ b/crates/codex-plus-core/src/protocol_proxy.rs
+@@ -3856,11 +3856,10 @@ async fn open_responses_proxy_request_once(
+             .map(|(_, value)| value.as_str())
+     });
+     if anticodex::is_unbound_desktop_title(&settings, &request_json, turn_metadata) {
+-        // The desktop supplies its global helper model here, even for a different chat provider.
+-        // Its built-in provisional title stays in place when generation is unavailable.
++        // The desktop can keep its provisional title without starting an upstream turn.
+         return invalid_request_response(
+             "missing_title_provider",
+-            "The desktop did not supply the conversation provider for this automatic title.",
++            "Automatic titles stay local for Anti-Codex conversations.",
+         );
+     }
+     align_codex_compaction_model_with_live_selection(&settings, &mut request_json, turn_metadata);
+diff --git a/crates/codex-plus-core/src/protocol_proxy/anticodex.rs b/crates/codex-plus-core/src/protocol_proxy/anticodex.rs
+index 16452b0..e05bfbf 100644
+--- a/crates/codex-plus-core/src/protocol_proxy/anticodex.rs
++++ b/crates/codex-plus-core/src/protocol_proxy/anticodex.rs
+@@ -96,14 +96,12 @@ pub(crate) fn is_unbound_desktop_title(
+     request: &Value,
+     turn_metadata: Option<&str>,
+ ) -> bool {
+-    let profiles = &settings.relay_profiles;
+-    if !profiles
+-        .iter()
+-        .any(|p| p.id == ANTICODEX_THIRD_PARTY_RELAY_ID)
+-        || !profiles
+-            .iter()
+-            .any(|p| p.id == ANTICODEX_ANTIGRAVITY_RELAY_ID)
+-    {
++    if !settings.relay_profiles.iter().any(|profile| {
++        matches!(
++            profile.id.as_str(),
++            ANTICODEX_ANTIGRAVITY_RELAY_ID | ANTICODEX_THIRD_PARTY_RELAY_ID
++        )
++    }) {
+         return false;
+     }
+     codex_turn_metadata_value(request, turn_metadata).is_some_and(|meta| {
+@@ -326,29 +324,46 @@ mod anticodex_compaction_selection_tests {
+     }
+ 
+     #[test]
+-    fn desktop_title_has_no_owner_in_dual_provider_mode() {
+-        let mut settings = BackendSettings::default();
+-        settings.relay_profiles = [
+-            ANTICODEX_ANTIGRAVITY_RELAY_ID,
+-            ANTICODEX_THIRD_PARTY_RELAY_ID,
+-        ]
+-        .map(|id| RelayProfile {
+-            id: id.to_owned(),
+-            ..Default::default()
+-        })
+-        .to_vec();
++    fn managed_desktop_titles_stay_local() {
+         let title = json!({"thread_source":"thread_title","turn_trigger":"thread_title"});
+         let body = json!({"client_metadata": {CODEX_TURN_METADATA_KEY: title.to_string()}});
+-        assert!(is_unbound_desktop_title(&settings, &body, None));
+-        assert!(is_unbound_desktop_title(
+-            &settings,
+-            &Value::Null,
+-            Some(&title.to_string())
+-        ));
+         let ordinary = json!({"input":"thread_title","client_metadata":{CODEX_TURN_METADATA_KEY:{"thread_source":"user","turn_trigger":"composer"}}});
+-        assert!(!is_unbound_desktop_title(&settings, &ordinary, None));
+-        settings.relay_profiles.pop();
+-        assert!(!is_unbound_desktop_title(&settings, &body, None));
++        let cases: &[(&[&str], bool)] = &[
++            (&[ANTICODEX_ANTIGRAVITY_RELAY_ID], true),
++            (&[ANTICODEX_THIRD_PARTY_RELAY_ID], true),
++            (
++                &[
++                    ANTICODEX_ANTIGRAVITY_RELAY_ID,
++                    ANTICODEX_THIRD_PARTY_RELAY_ID,
++                ],
++                true,
++            ),
++            (&["ordinary-relay"], false),
++            (&[], false),
++        ];
++        for &(profile_ids, stays_local) in cases {
++            let settings = BackendSettings {
++                relay_profiles: profile_ids
++                    .iter()
++                    .map(|id| RelayProfile {
++                        id: (*id).to_owned(),
++                        ..Default::default()
++                    })
++                    .collect(),
++                ..Default::default()
++            };
++            assert_eq!(
++                is_unbound_desktop_title(&settings, &body, None),
++                stays_local,
++                "profiles: {profile_ids:?}"
++            );
++            assert_eq!(
++                is_unbound_desktop_title(&settings, &Value::Null, Some(&title.to_string())),
++                stays_local,
++                "profiles: {profile_ids:?}"
++            );
++            assert!(!is_unbound_desktop_title(&settings, &ordinary, None));
++        }
+     }
+ 
+     #[test]
