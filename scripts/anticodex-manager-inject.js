@@ -1,5 +1,5 @@
 (() => {
-  const VERSION = "native-panel-v123";
+  const VERSION = "native-panel-v124";
   const SUMMARY_VERSION = "latest-reports-evidence-v5";
   const MANAGER_ID = "anticodex-manager-overlay";
   const LEGACY_BUTTON_ID = "anticodex-manager-button";
@@ -2098,6 +2098,7 @@
         const upstreamProfile = safeValue(upstreamResult, {});
         const routes = safeValue(routesResult, {});
         const usingThirdParty = upstreamProfile.active === "third-party";
+        const usingOfficial = health?.upstream === "antigravity-official";
         const accessibleConnectors = authorizedConnectorCount(connectors);
         const loadErrors = [
           [healthResult, "\u8fd0\u884c\u72b6\u6001"],
@@ -2175,8 +2176,8 @@
           snapshotStalenessNotice(snapshotStatus, snapshotRefreshText),
           card("\u8fd0\u884c\u72b6\u6001", kv([
             ["\u4e0a\u6e38", health?.upstream],
-            ["\u6a21\u578b\u901a\u9053", usingThirdParty ? ((upstreamProfile.runtime?.protocol || "third-party") + " / " + (upstreamProfile.runtime?.model || "\u672a\u77e5")) : "Antigravity"],
-            [usingThirdParty ? "\u63a5\u53e3\u72b6\u6001" : "Antigravity 登录", usingThirdParty ? "\u5df2\u914d\u7f6e" : (health?.accountReady ? "已登录" : "登录不可用")],
+            ["\u6a21\u578b\u901a\u9053", usingThirdParty ? ((upstreamProfile.runtime?.protocol || "third-party") + " / " + (upstreamProfile.runtime?.model || "\u672a\u77e5")) : (usingOfficial ? "Antigravity 官方" : "Antigravity")],
+            [usingThirdParty ? "\u63a5\u53e3\u72b6\u6001" : "Antigravity 登录", usingThirdParty ? "\u5df2\u914d\u7f6e" : (usingOfficial ? "由官方客户端管理" : (health?.accountReady ? "已登录" : "登录不可用"))],
             ...(usingThirdParty ? [["\u80fd\u529b\u8bc1\u636e", upstreamCapabilitySummary(upstreamProfile, health)]] : []),
             ["\u6d41\u91cf", usingThirdParty ? "\u7b2c\u4e09\u65b9 API" : (health?.accountTrafficReady === true ? "\u5df2\u5c31\u7eea" : (health?.accountTrafficMessage || (health?.accountTrafficReady === false ? "\u4e0a\u6e38\u8bf7\u6c42\u5931\u8d25" : "\u5c1a\u672a\u9a8c\u8bc1\u5bf9\u8bdd")))],
             ...(usingThirdParty ? [] : [["\u53d7\u9650\u6a21\u578b", health?.accountTrafficModel || "\u65e0"]]),

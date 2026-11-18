@@ -554,9 +554,9 @@ test("launcher gives an auto-started Antigravity desktop durable output handles"
   assert.match(launcher, /Get-CimInstance Win32_Process/);
 });
 
-test("third-party launch leaves Antigravity Desktop closed until a native request needs it", () => {
-  assert.match(taskLauncherSource, /plan\.provider === "antigravity"\s*\? await ensureAntigravityDesktop/);
-  assert.match(launcher, /if \(\$selection\.provider -eq "antigravity"\) \{\s*Ensure-AntigravityDesktop/);
+test("third-party and official ACP launches leave the desktop closed until a desktop request needs it", () => {
+  assert.match(taskLauncherSource, /plan\.provider === "antigravity" && !plan\.model\.startsWith\(OFFICIAL_MODEL_PREFIX\)\s*\? await ensureAntigravityDesktop/);
+  assert.match(launcher, /if \(\$selection\.provider -eq "antigravity" -and \$selection\.model -notlike "anticodex\/official\/\*"\) \{\s*Ensure-AntigravityDesktop/);
   assert.doesNotMatch(launcher, /Ensure-AntigravityDesktop[^\n]+-Optional/);
 });
 

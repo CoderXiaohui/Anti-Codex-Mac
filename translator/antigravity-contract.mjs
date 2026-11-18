@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 export const MAX_CHAT_BODY_BYTES = 128 * 1024 * 1024;
 export const MAX_NATIVE_MCP_BODY_BYTES = 8 * 1024 * 1024;
 export const DEFAULT_TOOL_CONTINUATION_TIMEOUT_MS = 15 * 60 * 1000;
+export const OFFICIAL_MODEL_PREFIX = "anticodex/official/";
 
 export function boundedPositiveInteger(value, fallback, maximum) {
   const parsed = Number(value);
@@ -851,6 +852,17 @@ export function nativeTurnError(payload, minimumStepIndex = -1) {
 export function mapAntigravityProviderError(error, ErrorType) {
   if (error instanceof ErrorType) return error;
   const message = String(error?.message ?? error ?? "Antigravity request failed.");
+  const acpHttpStatus = [429, 502, 503, 504].includes(error?.acpHttpStatus)
+    ? error.acpHttpStatus
+    : null;
+  if (acpHttpStatus !== null) {
+    const code = acpHttpStatus === 429
+      ? "quota_exceeded"
+      : acpHttpStatus === 504
+        ? "upstream_timeout"
+        : "upstream_service_error";
+    return new ErrorType(message, { cause: error, statusCode: acpHttpStatus, code });
+  }
   const statusCode = Number(error?.statusCode ?? error?.status ?? 0);
   if (error?.code === "prompt_budget_insufficient") {
     return new ErrorType(message, {

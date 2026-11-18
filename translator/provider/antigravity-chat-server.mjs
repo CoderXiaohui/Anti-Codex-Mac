@@ -67,7 +67,7 @@ export async function createAntigravityChatServer(options = {}) {
         return;
       }
       if (request.method === "GET" && url.pathname === "/v1/account") {
-        const account = await adapter.account({ signal: controller.signal });
+        const account = await adapter.account({ signal: controller.signal, model: url.searchParams.get("model") ?? "" });
         finished = true;
         sendJson(response, 200, {
           ...account,

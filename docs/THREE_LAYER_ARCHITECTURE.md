@@ -132,6 +132,19 @@ License rule:
 
 This is the only product-specific protocol component Anti-Codex writes, and only the Antigravity provider uses it.
 
+The model menu also offers **Antigravity 官方** entries when the installed Google
+CLI lists a matching model. These entries use Google's Agent Client Protocol
+through the same local Chat adapter. The unprefixed desktop-model IDs retain their
+original route. Standard third-party API models continue to use their own relay.
+
+In official mode the adapter starts an ACP session in a private directory and
+forwards the editor's instructions and tools. Antigravity's own file, terminal,
+and web operations are blocked. Calls to the session's editor MCP server return
+to Codex, where the current thread's permissions apply. The user's project is
+accessed by Codex tools after the same approval used for other providers.
+Cancelling or expiring an official session closes its local tool bridge and CLI
+process. The adapter never switches to a different model after a provider error.
+
 It exposes only the standard upstream interfaces consumed by CodexPlusPlus, including:
 
 - model discovery and model metadata;

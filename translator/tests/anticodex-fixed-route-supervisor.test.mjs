@@ -41,7 +41,7 @@ test("fixed-route supervisor keeps CodexPlusPlus as a helper-only proxy and owns
   assert.match(source, /createAntiCodexManagerService/);
   assert.match(source, /await managerService\.listen\(\)/);
   assert.match(source, /refreshModels:\s*\(\)\s*=>\s*refreshModelsCallback\(\)/);
-  assert.match(source, /source:\s*"antigravity-cascade"/);
+  assert.match(source, /source:\s*officialSelected \? "antigravity-official" : "antigravity-cascade"/);
   assert.match(source, /managerService:\s*process\.pid/);
   assert.match(source, /buildAntigravityModelCatalog/);
   assert.match(source, /readCompatibilityModelAliases/);
@@ -102,13 +102,13 @@ test("a missing local Worker is reported without blocking the remaining shared M
   assert.doesNotMatch(block, /catch \([^)]*\)\s*\{\s*return \{\s*children:\s*\[\]/s);
 });
 
-test("cold Antigravity startup gets the existing desktop warmup budget without delaying third-party startup", () => {
+test("only the legacy desktop route waits for the desktop login on cold startup", () => {
   const source = readFileSync(supervisorPath, "utf8");
   const start = source.indexOf("const antigravityClient = createAntigravityCascadeClient(");
   const end = source.indexOf("provider = await startAntigravityChatProvider", start);
   const block = source.slice(start, end);
   assert.ok(start >= 0 && end > start);
-  assert.match(block, /if \(plan\.provider === "antigravity"\) \{\s*const readiness = await antigravityClient.getReadiness\(\{ timeoutMs: 90_000 \}\)/);
+  assert.match(block, /if \(plan\.provider === "antigravity" && !officialSelected\) \{\s*const readiness = await antigravityClient.getReadiness\(\{ timeoutMs: 90_000 \}\)/);
   assert.match(block, /listModels\(\)/);
   assert.doesNotMatch(block, /listModels\(\{ timeoutMs:/);
 });

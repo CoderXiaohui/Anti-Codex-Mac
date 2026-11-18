@@ -969,7 +969,7 @@ Write-AntiCodexLauncherState -Stage "loading-provider"
 $runtimeProfile = Read-AntiCodexRuntimeProfile -StateRoot $stateRoot
 $nativeSelection = Read-AntiCodexNativeSelection -CodexHome $env:CODEX_HOME_DIR
 $selection = Set-AntiCodexProviderEnvironment -RuntimeProfile $runtimeProfile -NativeSelection $nativeSelection
-if ($selection.provider -eq "antigravity") {
+if ($selection.provider -eq "antigravity" -and $selection.model -notlike "anticodex/official/*") {
     Ensure-AntigravityDesktop -StateRoot $stateRoot
 }
 Write-AntiCodexLauncherState -Stage "checking-running-client" -Message "$($selection.provider):$($selection.model)"

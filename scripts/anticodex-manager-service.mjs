@@ -13,6 +13,7 @@ import {
     testCodexPlusPlusUpstreamConnection,
 } from "../translator/provider/codexplusplus-upstream-probe.mjs";
 import { localBackendApiResponse } from "../translator/local-projection/index.mjs";
+import { OFFICIAL_MODEL_PREFIX } from "../translator/antigravity-contract.mjs";
 import {
     finishConnectorAuth,
     listConnectorAuth,
@@ -1305,7 +1306,10 @@ async function fixedRouteAccountSnapshot(fixedRoute, options = {}) {
         return unavailableAccountSnapshot();
     }
     try {
-        const response = await fetch(`http://127.0.0.1:${fixedRoute.adapterPort}/v1/account`, {
+        const accountUrl = new URL(`http://127.0.0.1:${fixedRoute.adapterPort}/v1/account`);
+        const officialSelected = !forceAntigravity && fixedRoute.model.startsWith(OFFICIAL_MODEL_PREFIX);
+        if (officialSelected) accountUrl.searchParams.set("model", fixedRoute.model);
+        const response = await fetch(accountUrl, {
             headers: {
                 accept: "application/json",
                 ...(authToken ? { authorization: `Bearer ${authToken}` } : {}),
@@ -1314,6 +1318,13 @@ async function fixedRouteAccountSnapshot(fixedRoute, options = {}) {
         });
         if (!response.ok) return unavailableAccountSnapshot("adapter_unavailable");
         const body = await response.json();
+        if (officialSelected) {
+            return {
+                ok: true, provider: "antigravity-official", state: "official_login",
+                signedIn: null, identityAvailable: null, fingerprint: "",
+                planName: "", tierName: "", traffic: body.traffic ?? null,
+            };
+        }
         const fingerprint = /^sha256:[a-f0-9]{64}$/i.test(String(body?.fingerprint || ""))
             ? String(body.fingerprint).toLowerCase()
             : "";
@@ -1796,7 +1807,7 @@ async function diagnosticsPayload(stateRoot, fast, fixedHealthUrl, adapterAuthTo
         },
         mode: {
             upstreamMode: provider || "offline",
-            upstream: provider === "antigravity" ? "Antigravity Desktop Cascade" : (provider === "third-party" ? "CodexPlusPlus third-party" : "offline"),
+            upstream: model.startsWith(OFFICIAL_MODEL_PREFIX) ? "Antigravity official" : provider === "antigravity" ? "Antigravity Desktop Cascade" : (provider === "third-party" ? "CodexPlusPlus third-party" : "offline"),
             profile: provider || "",
             antigravity: provider === "antigravity",
         },
@@ -2197,7 +2208,7 @@ export function createAntiCodexManagerService(options = {}) {
         schema: "anticodex-manager-service-v1",
         ok: routeReady,
         role: "launcher-management-only",
-        upstream: fixedRoute.provider === "antigravity" ? "antigravity-desktop" : (fixedRoute.provider === "third-party" ? "codexplusplus-third-party" : "offline"),
+        upstream: fixedRoute.model.startsWith(OFFICIAL_MODEL_PREFIX) ? "antigravity-official" : fixedRoute.provider === "antigravity" ? "antigravity-desktop" : (fixedRoute.provider === "third-party" ? "codexplusplus-third-party" : "offline"),
         state: fixedRoute.state,
         routeReady,
         provider: fixedRoute.provider,
@@ -2208,7 +2219,7 @@ export function createAntiCodexManagerService(options = {}) {
           protocol: upstreamProtocol,
           model: fixedRoute.model || "",
         },
-        accountReady: fixedRoute.provider === "antigravity" ? account.signedIn === true && account.identityAvailable === true : null,
+        accountReady: fixedRoute.provider === "antigravity" && !fixedRoute.model.startsWith(OFFICIAL_MODEL_PREFIX) ? account.signedIn === true && account.identityAvailable === true : null,
         accountMessage: account.message || account.state || "",
         accountState: account.state,
         ...traffic,

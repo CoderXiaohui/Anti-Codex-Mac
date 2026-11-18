@@ -13,6 +13,7 @@ import { dirname, join, resolve } from "node:path";
 import net from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { OFFICIAL_MODEL_PREFIX } from "../translator/antigravity-contract.mjs";
 import {
   ANTIGRAVITY_MODEL_SLOT,
   THIRD_PARTY_MODEL_PREFIX,
@@ -634,7 +635,7 @@ export async function runTaskLauncher(options = {}) {
   try {
     const startedAt = new Date().toISOString();
     writeLauncherState(plan, startedAt, "initializing");
-    const desktopPath = plan.provider === "antigravity"
+    const desktopPath = plan.provider === "antigravity" && !plan.model.startsWith(OFFICIAL_MODEL_PREFIX)
       ? await ensureAntigravityDesktop(plan.stateRoot, env)
       : null;
     if (await fixedRouteReady()) {

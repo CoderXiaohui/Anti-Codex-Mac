@@ -22,6 +22,7 @@ import { buildAntigravityModelCatalog } from "../translator/antigravity-model-ca
 import { createAntigravityCascadeClient } from "../translator/provider/antigravity-cascade-client.mjs";
 import { readNativeCustomInstructions } from "../translator/provider/anticodex-prompt-policy.mjs";
 import { startAntigravityChatProvider } from "../translator/provider/start-antigravity-chat-provider.mjs";
+import { getOfficialModelCatalog, listOfficialAcpModels, OFFICIAL_MODEL_PREFIX } from "../translator/provider/antigravity-official-route.mjs";
 import { createAntiCodexManagerService } from "./anticodex-manager-service.mjs";
 import { ensureAntigravityDesktop } from "./start-anticodex-task.mjs";
 import { ownerProcessIsAlive } from "./lib/anticodex-owner-process.mjs";
@@ -371,7 +372,8 @@ export function buildFixedRoutePlan(argv = process.argv.slice(2), env = process.
   if (provider === "third-party" && !thirdPartyConfig) {
     throw new Error("Saved third-party route is incomplete");
   }
-  const model = provider === "third-party" ? thirdPartyModel : antigravityModel;
+  const selectedAntigravityModel = requestedModel && requestedModel !== ANTIGRAVITY_MODEL_SLOT ? requestedModel : antigravityModel;
+  const model = provider === "third-party" ? thirdPartyModel : selectedAntigravityModel;
   const modelContextWindow = provider === "third-party"
     ? contextWindow(args.contextWindow ?? env.UPSTREAM_CONTEXT_WINDOW, DEFAULT_THIRD_PARTY_CONTEXT_WINDOW)
     : null;
@@ -392,12 +394,12 @@ export function buildFixedRoutePlan(argv = process.argv.slice(2), env = process.
   const antigravityRoute = generateRouteConfig({
     provider: "antigravity",
     model: antigravityModel,
-    clientModel: provider === "antigravity" ? antigravityModel : ANTIGRAVITY_MODEL_SLOT,
+    clientModel: provider === "antigravity" ? model : ANTIGRAVITY_MODEL_SLOT,
     proxyPort: ports.proxy,
     adapterPort: ports.adapter,
     catalogPath,
     localProxyKey,
-    relayModelList: [ANTIGRAVITY_MODEL_SLOT, antigravityModel],
+    relayModelList: [ANTIGRAVITY_MODEL_SLOT, antigravityModel, ...(provider === "antigravity" ? [model] : [])],
   });
   const thirdPartyRoute = thirdPartyConfig
     ? generateRouteConfig({
@@ -445,7 +447,7 @@ export function buildFixedRoutePlan(argv = process.argv.slice(2), env = process.
     paths,
     sharedCodexHome,
     provider,
-    model: route.model,
+    model,
     antigravityModel,
     thirdPartyConfig,
     thirdPartyModels,
@@ -813,9 +815,13 @@ async function runSupervisor(plan) {
     const bundledCatalog = readBundledCatalog(plan.paths.codexCli);
     const antigravityCatalogPath = join(plan.paths.codexHome, "antigravity-model-catalog.json");
     const unifiedCatalogPath = join(plan.paths.codexHome, "anticodex-model-catalog.json");
+    const cachedOfficial = (readCatalogSafely(unifiedCatalogPath)?.models ?? []).filter(entry =>
+      entry.slug?.startsWith(OFFICIAL_MODEL_PREFIX) && entry.visibility !== "hide");
+    let officialModels = cachedOfficial;
+    const officialSelected = plan.provider === "antigravity" && plan.model.startsWith(OFFICIAL_MODEL_PREFIX);
     let desktopWarmup;
     const antigravityClient = createAntigravityCascadeClient({
-      beforeStart: plan.provider === "third-party" ? () => {
+      beforeStart: plan.provider === "third-party" || officialSelected ? () => {
         desktopWarmup ??= ensureAntigravityDesktop(plan.paths.stateRoot, process.env).finally(() => {
           desktopWarmup = undefined;
         });
@@ -825,7 +831,7 @@ async function runSupervisor(plan) {
     let antigravityReady = null;
     const previousAntigravityCatalog = readCatalogSafely(antigravityCatalogPath) ?? { ...bundledCatalog, models: [] };
     let antigravityCatalog = previousAntigravityCatalog;
-    if (plan.provider === "antigravity") {
+    if (plan.provider === "antigravity" && !officialSelected) {
       const readiness = await antigravityClient.getReadiness({ timeoutMs: 90_000 });
       antigravityReady = readiness?.signedIn === true;
       if (!antigravityReady) throw new Error("Antigravity Desktop is not signed in.");
@@ -837,11 +843,23 @@ async function runSupervisor(plan) {
         throw new Error(`Antigravity model is unavailable: ${plan.model}`);
       }
     }
+    if (plan.provider === "antigravity") {
+      try {
+        officialModels = getOfficialModelCatalog(await listOfficialAcpModels(), antigravityCatalog);
+      } catch {
+        status.officialModelDiscovery = "temporarily_unavailable";
+      }
+    }
     provider = await startAntigravityChatProvider({
       client: antigravityClient,
       host: "127.0.0.1",
       port: plan.ports.adapter,
       authToken: plan.route.localProxyKey,
+      officialAcp: {
+        temp: plan.paths.temp,
+        officialModels: () => officialModels,
+        cachedDesktopModels: officialSelected ? () => antigravityCatalog.models : undefined,
+      },
       adapterOptions: {
         nativeCustomInstructions: () => readNativeCustomInstructions(plan.paths.codexHome),
       },
@@ -850,6 +868,7 @@ async function runSupervisor(plan) {
     const thirdPartyRoute = plan.relayRoutes.find((entry) => entry.profileId === THIRD_PARTY_RELAY_ID) ?? null;
     let catalog = buildUnifiedModelCatalog(bundledCatalog, {
       antigravityCatalog,
+      officialModels,
       thirdPartyModel: thirdPartyRoute?.model,
       thirdPartyModels: plan.thirdPartyModels,
       thirdPartyContextWindow: thirdPartyRoute?.modelContextWindow ?? DEFAULT_THIRD_PARTY_CONTEXT_WINDOW,
@@ -857,7 +876,7 @@ async function runSupervisor(plan) {
     writeTextAtomic(unifiedCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
 
     const runtimeRelayRoutesForCatalog = (runtimeCatalog) => {
-      const antigravityModelIds = runtimeCatalog.models
+      const antigravityModelIds = [...runtimeCatalog.models, ...officialModels]
         .map((entry) => String(entry?.slug ?? "").trim())
         .filter(Boolean);
       return plan.relayRoutes.map((entry) => {
@@ -897,55 +916,64 @@ async function runSupervisor(plan) {
     refreshModelsCallback = async () => {
       if (refreshModelsInFlight) return refreshModelsInFlight;
       refreshModelsInFlight = (async () => {
-        const readiness = await antigravityClient.getReadiness();
-        if (readiness?.signedIn !== true) {
-          const error = new Error("Antigravity Desktop is not signed in; the existing model catalog was preserved.");
-          error.statusCode = 503;
-          throw error;
+        let refreshedAntigravityCatalog = antigravityCatalog;
+        if (!officialSelected) {
+          const readiness = await antigravityClient.getReadiness();
+          if (readiness?.signedIn !== true) {
+            const error = new Error("Antigravity Desktop is not signed in; the existing model catalog was preserved.");
+            error.statusCode = 503;
+            throw error;
+          }
+          const availableModels = await antigravityClient.listModels();
+          if (!Array.isArray(availableModels) || availableModels.length === 0) {
+            const error = new Error("Antigravity returned no models; the existing model catalog was preserved.");
+            error.statusCode = 503;
+            throw error;
+          }
+          const currentAntigravityCatalog = buildRuntimeCatalogFromBundled(bundledCatalog, availableModels);
+          refreshedAntigravityCatalog = preserveHiddenCompatibilityModels(currentAntigravityCatalog, antigravityCatalog);
         }
-        const availableModels = await antigravityClient.listModels();
-        if (!Array.isArray(availableModels) || availableModels.length === 0) {
-          const error = new Error("Antigravity returned no models; the existing model catalog was preserved.");
-          error.statusCode = 503;
-          throw error;
-        }
-        const currentAntigravityCatalog = buildRuntimeCatalogFromBundled(bundledCatalog, availableModels);
-        const refreshedAntigravityCatalog = preserveHiddenCompatibilityModels(
-          currentAntigravityCatalog,
-          antigravityCatalog,
-        );
         const liveSettings = JSON.parse(readFileSync(join(plan.paths.codexPlusPlusState, "settings.json"), "utf8"));
         const thirdPartyCatalogOptions = thirdPartyCatalogOptionsFromSettings(liveSettings, thirdPartyRoute);
         const previousUnifiedCatalog = readCatalogSafely(unifiedCatalogPath) ?? catalog;
+        let refreshedOfficial = officialModels;
+        try {
+          refreshedOfficial = getOfficialModelCatalog(await listOfficialAcpModels(), refreshedAntigravityCatalog);
+        } catch (error) {
+          if (officialSelected) throw error;
+          // A temporarily unavailable optional provider does not retire its saved models.
+        }
         const rebuiltCatalog = buildUnifiedModelCatalog(bundledCatalog, {
           antigravityCatalog: refreshedAntigravityCatalog,
           ...thirdPartyCatalogOptions,
+          officialModels: refreshedOfficial,
         });
         const refreshedCatalog = preserveHiddenCompatibilityModels(rebuiltCatalog, previousUnifiedCatalog);
-        const refreshedSettings = refreshAntigravityRelayModelList(liveSettings, refreshedAntigravityCatalog);
+        const refreshedSettings = refreshAntigravityRelayModelList(liveSettings, refreshedAntigravityCatalog, refreshedOfficial);
 
         writeTextAtomic(antigravityCatalogPath, `${JSON.stringify(refreshedAntigravityCatalog, null, 2)}\n`);
         writeTextAtomic(unifiedCatalogPath, `${JSON.stringify(refreshedCatalog, null, 2)}\n`);
         writeTextAtomic(join(plan.paths.codexPlusPlusState, "settings.json"), `${JSON.stringify(refreshedSettings, null, 2)}\n`);
 
         antigravityCatalog = refreshedAntigravityCatalog;
+        officialModels = refreshedOfficial;
         catalog = refreshedCatalog;
-        antigravityReady = true;
+        if (!officialSelected) antigravityReady = true;
         status = {
           ...status,
-          antigravityReady: true,
+          antigravityReady,
           catalogModelCount: refreshedCatalog.models.length,
           modelCatalogRefreshedAt: new Date().toISOString(),
         };
         writeStatus(plan.paths.statusFile, status);
-        const models = refreshedAntigravityCatalog.models
+        const models = (officialSelected ? refreshedOfficial : refreshedAntigravityCatalog.models)
           .filter((entry) => String(entry?.visibility || "").toLowerCase() !== "hide")
           .map((entry) => String(entry?.slug || "").trim())
           .filter(Boolean);
         return {
           ok: true,
           refreshed: true,
-          source: "antigravity-cascade",
+          source: officialSelected ? "antigravity-official" : "antigravity-cascade",
           modelCount: models.length,
           models,
         };
@@ -984,7 +1012,7 @@ async function runSupervisor(plan) {
       }
       const [proxyReady, selectedModelReady] = await Promise.all([
         tcpReady(plan.ports.proxy),
-        plan.provider === "antigravity"
+        plan.provider === "antigravity" && !officialSelected
           ? proxyModelCatalogReady(plan.ports.proxy, plan.route.localProxyKey, antigravityProbeModel(antigravityCatalog, plan.model))
           : Promise.resolve(true),
       ]);
@@ -1717,6 +1745,9 @@ export function buildUnifiedModelCatalog(bundled, options = {}) {
       priority: visibleModels.length,
     });
   };
+  for (const entry of options.officialModels ?? []) {
+    add(entry, entry.visibility === "hide" ? "hide" : "list");
+  }
   for (const entry of antigravityModels) {
     if (!entry?.slug) continue;
     add({ ...entry, display_name: "Antigravity · " + (entry.display_name || entry.slug) }, entry.visibility === "hide" ? "hide" : "list");
@@ -1804,7 +1835,7 @@ export function thirdPartyCatalogOptionsFromSettings(settings, fallbackRoute = n
   };
 }
 
-export function refreshAntigravityRelayModelList(settings, antigravityCatalog) {
+export function refreshAntigravityRelayModelList(settings, antigravityCatalog, officialModels = []) {
   const profiles = Array.isArray(settings?.relayProfiles) ? settings.relayProfiles : [];
   const modelIds = [];
   const seen = new Set();
@@ -1813,6 +1844,7 @@ export function refreshAntigravityRelayModelList(settings, antigravityCatalog) {
     ...(Array.isArray(antigravityCatalog?.models)
       ? antigravityCatalog.models.map((entry) => entry?.slug)
       : []),
+    ...officialModels.map(entry => entry.slug),
   ]) {
     const modelId = String(value ?? "").trim();
     if (!modelId || seen.has(modelId)) continue;

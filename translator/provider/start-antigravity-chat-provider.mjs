@@ -3,13 +3,17 @@ import { pathToFileURL } from "node:url";
 import { createAntigravityCascadeClient } from "./antigravity-cascade-client.mjs";
 import { createAntigravityChatAdapter } from "./antigravity-chat-adapter.mjs";
 import { createAntigravityChatServer } from "./antigravity-chat-server.mjs";
+import { createOfficialAcpRoute } from "./antigravity-official-route.mjs";
 
 export async function startAntigravityChatProvider(options = {}) {
   const client = options.client ?? createAntigravityCascadeClient(options.clientOptions);
-  const adapter = options.adapter ?? createAntigravityChatAdapter({
+  const desktop = options.adapter ?? createAntigravityChatAdapter({
     client,
     ...(options.adapterOptions ?? {}),
   });
+  const adapter = options.officialAcp
+    ? createOfficialAcpRoute({desktop, adapterOptions:options.adapterOptions, ...options.officialAcp})
+    : desktop;
   const server = await createAntigravityChatServer({
     adapter,
     host: options.host ?? "127.0.0.1",
