@@ -10,7 +10,7 @@ import {
 } from "../provider/antigravity-cascade-client.mjs";
 import { createAntigravityChatAdapter } from "../provider/antigravity-chat-adapter.mjs";
 import * as cascadeClientModule from "../provider/antigravity-cascade-client.mjs";
-import { renderBoundedSystemPromptSections } from "../antigravity-contract.mjs";
+import { nativeTurnError, renderBoundedSystemPromptSections } from "../antigravity-contract.mjs";
 
 test("extracts only loopback listening ports owned by the Antigravity process", () => {
   const netstat = [
@@ -517,6 +517,66 @@ for (const [statusCode, upstreamStatus] of [[429, "RESOURCE_EXHAUSTED"], [503, "
     });
   }
 }
+
+test("adds only a strictly validated native error ID to the visible message", () => {
+  const errorId = "df05b8aa-9708-43f3-8d96-7789a82d0752-7";
+  const message = "API error (attempt 7): RESOURCE_EXHAUSTED (code 429): Check capacity and quota.";
+  const payload = (candidate) => ({
+    status: "CASCADE_RUN_STATUS_RUNNING",
+    trajectory: {
+      steps: [{
+        status: "CORTEX_STEP_STATUS_DONE",
+        errorMessage: { error: { shortError: message, errorId: candidate, accountId: "must-not-leak" } },
+      }],
+    },
+  });
+
+  const parsed = nativeTurnError(payload(errorId));
+  assert.equal(parsed.message, `${message} (errorId: ${errorId})`);
+  assert.equal(parsed.retrying, true);
+  assert.doesNotMatch(parsed.message, /must-not-leak/u);
+
+  for (const invalid of [
+    undefined,
+    "not-a-uuid-7",
+    "df05b8aa-9708-43f3-8d96-7789a82d0752",
+    "df05b8aa-9708-43f3-8d96-7789a82d0752-0",
+    `${errorId}-extra`,
+  ]) {
+    assert.equal(nativeTurnError(payload(invalid)).message, message, String(invalid));
+  }
+});
+
+test("keeps the last valid native retry error ID visible when the Cascade timeout expires", async () => {
+  const errorId = "df05b8aa-9708-43f3-8d96-7789a82d0752-7";
+  const service = fakeService({
+    GetAvailableModels: () => jsonResponse(modelPayload()),
+    StartCascade: () => jsonResponse({ cascadeId: "cascade_retry_timeout" }),
+    SendUserCascadeMessage: () => jsonResponse({}),
+    WaitForConversationFullyIdle: () => jsonResponse({}),
+    GetCascadeTrajectory: () => jsonResponse({
+      status: "CASCADE_RUN_STATUS_RUNNING",
+      trajectory: {
+        steps: [{
+          status: "CORTEX_STEP_STATUS_DONE",
+          errorMessage: {
+            error: {
+              shortError: "API error (attempt 7): RESOURCE_EXHAUSTED (code 429): Check capacity and quota.",
+              errorId,
+            },
+          },
+        }],
+      },
+    }),
+    CancelCascadeInvocation: () => jsonResponse({}),
+  });
+  const client = clientFor(service.fetch, { pollIntervalMs: 1, timeoutMs: 30 });
+
+  await assert.rejects(
+    collect(client.start({ model: "gemini-pro-agent", userText: "hello", tools: [] })),
+    (error) => error.statusCode === 429 && error.message.includes(errorId),
+  );
+});
 
 test("lazy desktop startup is exclusive to chat and respects cancellation before model dispatch", async () => {
   const abort = new AbortController();

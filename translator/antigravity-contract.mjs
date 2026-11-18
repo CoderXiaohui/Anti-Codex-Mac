@@ -812,6 +812,8 @@ export function nativeTrajectoryStatus(message) {
   return statusCode;
 }
 
+const NATIVE_ERROR_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}-[1-9]\d*$/iu;
+
 export function nativeTurnError(payload, minimumStepIndex = -1) {
   const steps = payload?.trajectory?.steps ?? payload?.steps ?? [];
   let recovered = false;
@@ -827,10 +829,14 @@ export function nativeTurnError(payload, minimumStepIndex = -1) {
       details?.message,
     ].find((candidate) => typeof candidate === "string" && candidate.trim());
     if (message) {
-      const attempt = /^API error \(attempt \d+\):.*(?:RESOURCE_EXHAUSTED|\b(?:429|502|503|504)\b)/i.test(message.trim());
+      const trimmedMessage = message.trim();
+      const attempt = /^API error \(attempt \d+\):.*(?:RESOURCE_EXHAUSTED|\b(?:429|502|503|504)\b)/i.test(trimmedMessage);
       if (recovered && attempt) return null;
+      const errorId = typeof details?.errorId === "string" && NATIVE_ERROR_ID_PATTERN.test(details.errorId)
+        ? details.errorId
+        : "";
       return {
-        message: message.trim(),
+        message: errorId ? `${trimmedMessage} (errorId: ${errorId})` : trimmedMessage,
         retrying: attempt && (payload?.status ?? payload?.trajectory?.status) === "CASCADE_RUN_STATUS_RUNNING",
       };
     }
