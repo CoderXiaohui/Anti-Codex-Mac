@@ -9,7 +9,7 @@
 [![Platform](https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-0078D4?style=flat-square&logo=windows)](#4-requirements--prerequisites)
 [![Architecture](https://img.shields.io/badge/Architecture-Locked%203--Layer-EC4899?style=flat-square)](#2-core-architecture-locked-3-layer-design)
 [![Provider Layer](https://img.shields.io/badge/Provider-CodexPlusPlus%202.6.7-0EA5E9?style=flat-square)](#2-core-architecture-locked-3-layer-design)
-[![Antigravity Route](https://img.shields.io/badge/Antigravity-Keep%20Desktop%20App%20Open-F59E0B?style=flat-square)](#important-keep-antigravity-desktop-open-when-using-antigravity-models)
+[![Antigravity](https://img.shields.io/badge/Antigravity-Model%20routes-F59E0B?style=flat-square)](#using-antigravity-models)
 [![License](https://img.shields.io/badge/License-Non--Commercial-10B981?style=flat-square)](#license--disclaimer)
 
 **[简体中文说明 (README.md)](README.md)** · **English Documentation** · **[3-Layer Architecture](docs/THREE_LAYER_ARCHITECTURE.md)** · **[Windows Guide](docs/WINDOWS.md)**
@@ -21,8 +21,8 @@
 **Anti-Codex** is a guarded, `isolated` copy of the `official Codex` Desktop application for Windows. It preserves **100% of the native `Codex` UI, workflow, and underlying agent harness (`Codex` exclusively owns planning, `tools`, terminal commands, file edits, approvals, retries, and `compaction`)** while replacing only the model provider layer — letting you connect directly to third-party APIs or reuse your local **Antigravity Desktop** models and quota without touching a single file or login token of your original Codex installation.
 
 > [!IMPORTANT]
-> ### Important: Keep Antigravity Desktop Open When Using Antigravity Models!
-> - **When using Antigravity models (MUST stay open)**: **Antigravity Desktop must be launched, signed in, and kept running in the background** (minimized is fine — do not quit it) the entire time you use Antigravity models in Anti-Codex. Anti-Codex bridges requests through your live local Antigravity Desktop `Cascade` service to fetch models and reuse your account quota; closing Antigravity will immediately stop model refresh and inference requests.
+> ### Using Antigravity models
+> Pick **Antigravity 官方** in the normal chat input to use Google’s editor connection with your signed-in Antigravity CLI (`agy`). The legacy Desktop Cascade models use the running, signed-in Antigravity Desktop app.
 > - **When using ordinary third-party APIs (not required)**: Ordinary `third-party` traffic is routed directly by `CodexPlusPlus` to your configured provider endpoint and `bypasses` `Antigravity` completely. You do not need Antigravity open (or even installed) for standard API keys.
 
 ---
@@ -66,7 +66,7 @@
 | :--- | :--- |
 | **Protect your official Codex setup** | Copies the host into `%LOCALAPPDATA%\Anti-Codex` and stores all runtime state inside `%APPDATA%\anticodex`. |
 | **Keep the real Codex agent harness** | No custom task loop; native `Codex` owns planning, `tools`, shell execution, approvals, retries, and `compaction`. |
-| **Reuse local Antigravity Desktop quota** | Keep **Antigravity Desktop** open and pick Gemini / Claude models straight from the native Codex composer via a `thin` `Chat`-to-`Cascade` adapter. |
+| **Use your Antigravity account** | Choose an **Antigravity 官方** model from the regular composer. Codex handles file operations and approvals in the same conversation. |
 | **Connect any standard 3rd-party API** | Built-in `管理` (Manage) panel lets you test and switch to Responses or Chat Completions APIs directly. |
 | **Safe updates & instant rollback** | Candidate host builds are patched, re-hashed, and gate-verified before atomic activation, keeping the prior version ready for 1-click rollback. |
 
@@ -87,7 +87,7 @@ Anti-Codex is governed by a strict **[Three-Layer Architecture](docs/THREE_LAYER
    - Upstream `CodexPlusPlus` (pinned release + audited isolation patches) handles general Responses/Chat conversion and ordinary third-party API connections.
    - **Direct Third-Party Bypass**: Ordinary `third-party` traffic connects directly to external providers and `bypasses` `Antigravity` completely.
 3. **Layer 3 — Thin Antigravity Adapter**
-   - Activated only when an Antigravity model is selected. This `thin` adapter maps standard `Chat` Completions requests to the running local Antigravity Desktop `Cascade` service, reusing its signed-in account, model catalog, and quota without taking over tools or task control.
+   - The official route uses the signed-in `agy` client. The legacy route uses a thin Chat-to-Cascade adapter for the running Desktop app. Both return tool requests to Codex.
 
 > [!NOTE]
 > **Security & Authorization Boundary**: Original Codex files and user data remain untouched. `Connector-backed app tools` remain unavailable until genuinely authorized; copied local metadata never fakes or grants authorization.
@@ -96,7 +96,7 @@ Anti-Codex is governed by a strict **[Three-Layer Architecture](docs/THREE_LAYER
 
 ## 3. How It Works
 
-In one sentence: **Anti-Codex makes the official Codex client believe it is talking to an ordinary OpenAI-style endpoint. That endpoint is actually a local relay, which forwards each request either to your third-party API or to your locally running Antigravity Desktop, depending on the model you picked.** Native Codex stays the brain (planning, tool calls, command execution). The relay only passes messages.
+The selected model determines where the local relay sends each request. Codex retains control of tools and permissions.
 
 ### The full path of one request
 
@@ -107,7 +107,7 @@ sequenceDiagram
     participant C as Anti-Codex client<br/>(isolated official Codex copy)
     participant P as CodexPlusPlus relay<br/>127.0.0.1:18484
     participant A as Thin Antigravity adapter<br/>127.0.0.1:18488
-    participant G as Antigravity Desktop<br/>(local language_server process)
+    participant G as Antigravity official connection or legacy Desktop
     participant T as Third-party API provider
     U->>C: Enter a task
     C->>P: Native Responses request
@@ -116,7 +116,7 @@ sequenceDiagram
         T-->>P: Streaming reply
     else Antigravity model selected
         P->>A: Standard Chat Completions request
-        A->>G: Local Cascade service call
+        A->>G: Use the selected official or Desktop connection
         G-->>A: Model output, or a tool call request
         A-->>P: Text, or standard tool_calls
     end
@@ -133,13 +133,13 @@ sequenceDiagram
 | **2. Separate all data** | The copy launches with its own Codex home (`%APPDATA%\anticodex`) and its own Electron user-data directory, so sign-in state, chat history and config never mix with the original app. |
 | **3. Point the model endpoint at the local relay** | The isolated client's model endpoint is `http://127.0.0.1:18484/v1`, served by `CodexPlusPlus`. The client still sends its native request format and notices no difference. |
 | **4. Route by model** | `CodexPlusPlus` checks which model you picked. Third-party models go straight to the API you configured in `管理` (ordinary third-party traffic bypasses Antigravity). Antigravity models are converted to standard Chat Completions and handed to the thin adapter on port `18488`. Route mismatches fail closed instead of silently switching models. |
-| **5. Thin adapter connects to Antigravity** | The adapter finds the running Antigravity Desktop `language_server` process, reads its local port and per-session CSRF token from the process command line, and calls Antigravity's local Cascade service with that token to list models, read account status, start a conversation, fetch replies and cancel requests. Usage counts against your own signed-in account. |
-| **6. Tools stay with native Codex** | Codex's tools (shell commands, file edits, and so on) are offered to the Antigravity model through a temporary local MCP endpoint (random port plus random secret path). When the model wants a tool, the adapter turns that into standard `tool_calls` for Codex, and **Codex executes it under its own approval and permission rules**. The result is sent back to the model the same way. Antigravity never executes commands itself. |
+| **5. Connect to Antigravity** | Official models use the signed-in `agy acp` client. The legacy thin adapter uses the local Desktop Cascade service. |
+| **6. Tools stay with native Codex** | Codex handles file access, commands, and approvals. The official connection stays open until the tool result arrives and the same conversation can continue. |
 | **7. Follow official updates** | After official Codex updates, sync rebuilds and validates a fresh copy in `update-candidate`, swaps it in only when every check passes, and keeps the previous version in `rollback-host`. |
 
-### Why Antigravity Desktop must stay open
+### When to keep Antigravity Desktop open
 
-Step 5 talks to **the Antigravity Desktop process running on your machine**. Its port and token are generated when that process starts. Once Antigravity is closed, the process is gone, so the model list and chat requests both fail. Normal chats only use that process's local port and token, and Anti-Codex never talks to Antigravity's cloud directly. Only the optional account-switch feature in `管理` saves Antigravity sign-in snapshots locally, encrypted with Windows DPAPI for the current user. Ordinary third-party APIs use the direct branch in step 4 and do not need that process.
+Keep Desktop signed in and running when using the legacy route or refreshing its live catalog. The official route was tested with a signed-in CLI and Desktop running.
 
 ---
 
@@ -149,8 +149,8 @@ Step 5 talks to **the Antigravity Desktop process running on your machine**. Its
 | :--- | :--- |
 | **OS & Base Client** | Windows 10 / 11 (x64) with the official **Codex Desktop** installed (Microsoft Store / WindowsApps). |
 | **Runtime** | **Node.js** (`node.exe` available on `PATH`) and Windows PowerShell 5.1. |
-| **Route A: Ordinary 3rd-Party API** | Provider endpoint URL, model name, and API key (Antigravity does **not** need to be running or installed). |
-| **Route B: Antigravity Models** | **Antigravity Desktop** installed, signed in, and **kept open/running while using Anti-Codex**, with working network access. |
+| **Route A: Third-party API** | Provider URL and API key. Anti-Codex discovers the advertised models and adds them to the composer menu. |
+| **Route B: Antigravity** | A signed-in Antigravity CLI for models labeled **Antigravity 官方**. Legacy Desktop models require a running, signed-in Desktop app. |
 
 ---
 
@@ -177,16 +177,16 @@ The installer builds and validates the isolated host copy, deploys the verified 
 
 ### Step 2: Launch Anti-Codex (Check Prerequisites First!)
 
-1. **If you plan to use Antigravity models**: **Launch Antigravity Desktop first and make sure it stays open and signed in** (leaving it in the background or minimized is fine).
+1. For official Antigravity models, sign in with the Antigravity CLI. For legacy Desktop models, keep Antigravity Desktop running and signed in.
 2. Open **Anti-Codex** from your Desktop shortcut or `Start Menu > Anti-Codex > Anti-Codex`.
    - Launching the shortcut again while Anti-Codex is already open cleanly focuses the existing window instead of spawning duplicate instances.
 
 ### Step 3: Select Models, Vision Input & Third-Party APIs
 
 - **Open Manager**: Click `管理` (Manage) in the bottom-left profile menu inside Anti-Codex, or open `Start Menu > Anti-Codex > Manage Anti-Codex`.
-- **Use Antigravity Models**: Keep **Antigravity Desktop running**, refresh status/models in `管理`, and choose your desired model and reasoning effort directly from the native Codex composer menu.
-- **Use Third-Party APIs**: In `管理`, click `配置第三方 API`, select Chat Completions or Responses, enter URL / model / API key, pass `测试连通` (Test Connection), and click `保存并切换` (Save & Switch). Click `恢复 Antigravity` anytime to switch back.
-- **Fail-Closed Routing**: If the selected upstream is unreachable (for example, if Antigravity Desktop was closed), Anti-Codex fails closed with a clear error rather than silently switching to another model.
+- **Antigravity models** — Choose the desired model and reasoning effort from the chat input. Official entries begin with **Antigravity 官方**.
+- **Third-party APIs** — In `管理`, select the protocol, enter the provider URL and key, then save. Choose any discovered model from the chat input. Third-party chats and their automatic titles stay off the Antigravity connection.
+- If the selected provider is unavailable, the chat reports the error and keeps your selected route.
 
 <div align="center">
   <img src="assets/vision-smoke.png" alt="Anti-Codex Multimodal Vision Smoke Asset" width="380" /><br/>
@@ -216,7 +216,7 @@ Start Menu > Anti-Codex > Rollback Anti-Codex
 ## 6. Quick Troubleshooting (FAQ)
 
 1. **Why did model refresh or chat fail when using an Antigravity model?**
-   - Make sure **Antigravity Desktop is currently open and signed in** on your machine, then click refresh inside Anti-Codex `管理`.
+   - For an official model, check the Antigravity CLI login and the model menu. For a legacy Desktop model, check that Desktop is open and signed in, then refresh the catalog in `管理`.
 2. **Can I run original blue Codex and pink Anti-Codex at the same time?**
    - Yes. Their binaries, local ports, Electron user-data directories, and state roots are completely isolated.
 3. **Do I need Antigravity running when using my own third-party API key?**
@@ -273,4 +273,4 @@ node --test --test-concurrency=2 translator/tests/*.test.mjs
 - **Project code**: [Non-commercial license](LICENSE). Personal, educational and research use, modification and sharing are allowed. Commercial use is not.
 - **CodexPlusPlus component**: From upstream [BigPizzaV3/CodexPlusPlus](https://github.com/BigPizzaV3/CodexPlusPlus) under its AGPL-3.0 license. Patches live separately in `third_party/codexplusplus`.
 - **Other third-party code**: See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-- This is a personal tool with no affiliation to OpenAI or Antigravity. The Antigravity connection uses the local desktop client's internal interface, which may change when Antigravity updates and temporarily break the route. Follow each service's terms of use.
+- This is a personal tool with no affiliation to OpenAI or Antigravity. Official models use the Antigravity editor connection. The legacy models use the Desktop interface, which can change on update. Follow each service’s terms of use.

@@ -7,12 +7,15 @@ under `%LOCALAPPDATA%\Anti-Codex`. It does not modify the official installation.
 
 - Official Codex Desktop for Windows
 - Node.js available as `node.exe`
-- A running, signed-in Antigravity Desktop client (keep Antigravity Desktop open while using Antigravity models)
-- Provider endpoint, model, and key when using an ordinary third-party API
+- Git and Python for installation
+- A signed-in Antigravity CLI (`agy`) for the official models, or a running, signed-in Antigravity Desktop app for legacy Desktop models
+- A provider URL and API key for a third-party API
 
 Third-party providers are handled directly by CodexPlusPlus and bypass
-Antigravity. The thin Antigravity route uses Desktop Cascade only for model
-inference; native Codex still owns tools and the task loop.
+Antigravity. Saving the provider discovers its models for the chat menu. For
+Antigravity, choose an entry labeled **Antigravity 官方** in the same composer.
+The official connection stays open while Codex runs a tool under its existing
+approval rules. The legacy thin Chat-to-Cascade route requires the Desktop app.
 
 ## Install
 
@@ -76,8 +79,8 @@ and rollback point unchanged.
 - Anti-Codex uses `%APPDATA%\anticodex` and a separate Electron user-data path.
 - Skills, MCP configuration, plugin metadata, and connector metadata are copied
   into isolated state. Metadata does not authorize connector-backed app tools.
-- The active Antigravity route uses one signed-in Desktop account; no dual-account
-  scheduler is installed.
+- Official models use the signed-in Antigravity CLI account. The legacy Desktop
+  route uses the account that is active in the Desktop app.
 - Provider mismatches fail closed instead of silently switching upstreams.
 
 ## Windows npm / npx
