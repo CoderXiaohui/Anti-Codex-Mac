@@ -6,7 +6,7 @@
   "tag": "v2.6.7",
   "upstreamCommit": "e63ff6c98be7b79b1d8a5983b541ea2bd6cafcfd",
   "isolationPatchCommit": "8dd29e1e52eb24686b8ae8ac3a75d7fc08ae9e02",
-  "patchCommit": "db76be879bd6db2ad3a11bff397d866d2ff2ff6f",
+  "patchCommit": "6c2d6ba06d1593ecf15a399ddd1743ee419083bf",
   "patches": [
     {
       "file": "candidates/v2.6.7/patches/0021-v267-format-normalization.patch",
@@ -32,16 +32,21 @@
       "file": "candidates/v2.6.7/patches/0025-v267-local-desktop-titles.patch",
       "sha256": "82360f5f39de7b8476233e61c468fc9e7b1b6c58ae04e7bbef4221d161e028ce",
       "scope": "Keep automatic desktop titles local for either managed relay, even with a single provider configured"
+    },
+    {
+      "file": "candidates/v2.6.7/patches/0026-v267-custom-tool-provider-metadata.patch",
+      "sha256": "4997b092f90d2a69b4001a0882ee6f9fa483a10f250b4d7d6b32a9492861c541",
+      "scope": "Replay the original upstream tool metadata for custom Chat tool calls, including Gemini thought signatures"
     }
   ],
   "verification": {
-    "patchReplay": "5 project patches replayed without automatic conflict resolution; head db76be879bd6db2ad3a11bff397d866d2ff2ff6f; tree 8fd36c7941f57643bdfed2fe2dacf54e3f12d9c5",
+    "patchReplay": "6 project patches replayed without automatic conflict resolution; head 6c2d6ba06d1593ecf15a399ddd1743ee419083bf; tree 007113f9df576b359e5b7c05394c7295394522a4",
     "sourceIsolationAudit": "passed",
     "auditRegressionTests": "Candidate-local format, protocol proxy, response history (integration and library), native stream forwarding, local helper safeguards and watcher, Manager and launcher checks passed; complete project regression and promotion preflight remain required before replacing accepted upstream.json.",
     "cargoFmt": "passed",
     "cargoCheck": "protocol proxy, response history (integration and library), native stream forwarding, local helper safeguards and watcher tests passed; Windows x64 Manager check passed",
     "windowsNativeTests": "Windows x64 release launcher build passed through the managed project runner",
-    "launcherReleaseBuild": "sha256:f746d8fd714d08ae0da4efcdacfb513d05238479447b3aa36412f2ef306517f8",
+    "launcherReleaseBuild": "sha256:44f16e16021a90111fa0eae1fe81f41e4fad2172c70666364e5460c5c367a767",
     "runtimeIsolation": "candidate only; not activated"
   }
 }

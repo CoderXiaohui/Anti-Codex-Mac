@@ -1,0 +1,129 @@
+diff --git a/crates/codex-plus-core/src/protocol_proxy.rs b/crates/codex-plus-core/src/protocol_proxy.rs
+index b398717..e5b8e71 100644
+--- a/crates/codex-plus-core/src/protocol_proxy.rs
++++ b/crates/codex-plus-core/src/protocol_proxy.rs
+@@ -127,6 +127,19 @@ fn recall_tool_call_extra_content(call_id: &str) -> Option<Value> {
+         .and_then(|cache| cache.recall(call_id))
+ }
+ 
++fn chat_history_function_call(call_id: &str, name: &str, arguments: String) -> Value {
++    let mut tool_call = json!({
++        "id": call_id,
++        "type": "function",
++        "function": {"name": name, "arguments": arguments}
++    });
++    // 只回放该次工具调用由上游返回的附带数据。
++    if let Some(extra) = recall_tool_call_extra_content(call_id) {
++        tool_call["extra_content"] = extra;
++    }
++    tool_call
++}
++
+ const PROTOCOL_PROXY_PORT_FILE: &str = "protocol-proxy-port";
+ const PROTOCOL_PROXY_PORT_HISTORY_FILE: &str = "protocol-proxy-port-history";
+ 
+@@ -8823,21 +8836,9 @@ fn append_responses_item(
+             }
+             seen_tool_call_ids.insert(call_id.to_string());
+             seen_tool_output_ids.remove(call_id);
+-            pending_tool_calls.push(json!({
+-                "id": call_id,
+-                "type": "function",
+-                "function": {
+-                    "name": name,
+-                    "arguments": responses_arguments_to_chat(item.get("arguments").unwrap_or(&json!({})))
+-                }
+-            }));
+-            // 把上一轮上游附带的透传数据挂回（Gemini thought_signature 等）。
+-            // 缺失时保持原样，不影响其它供应商。
+-            if let Some(extra) = recall_tool_call_extra_content(call_id) {
+-                if let Some(last) = pending_tool_calls.last_mut() {
+-                    last["extra_content"] = extra;
+-                }
+-            }
++            let arguments =
++                responses_arguments_to_chat(item.get("arguments").unwrap_or(&json!({})));
++            pending_tool_calls.push(chat_history_function_call(call_id, &name, arguments));
+         }
+         Some("function_call_output") => {
+             let call_id = item.get("call_id").and_then(Value::as_str).unwrap_or("");
+@@ -8881,14 +8882,7 @@ fn append_responses_item(
+             }
+             seen_tool_call_ids.insert(call_id.to_string());
+             seen_tool_output_ids.remove(call_id);
+-            pending_tool_calls.push(json!({
+-                "id": call_id,
+-                "type": "function",
+-                "function": {
+-                    "name": name,
+-                    "arguments": arguments
+-                }
+-            }));
++            pending_tool_calls.push(chat_history_function_call(call_id, &name, arguments));
+         }
+         Some("tool_search_call") => {
+             // Codex 的 tool_search 是客户端执行的代理工具，历史回放时按
+diff --git a/crates/codex-plus-core/tests/all/protocol_proxy.rs b/crates/codex-plus-core/tests/all/protocol_proxy.rs
+index 616c420..fdd4e6d 100644
+--- a/crates/codex-plus-core/tests/all/protocol_proxy.rs
++++ b/crates/codex-plus-core/tests/all/protocol_proxy.rs
+@@ -4567,6 +4567,59 @@ data: [DONE]
+     assert!(converted.contains("\"input\":\"pwd\""));
+ }
+ 
++#[test]
++fn streamed_gemini_custom_tool_signature_survives_history_replay() {
++    let extra_content = json!({"google":{"thought_signature":"GEMINI-CUSTOM-SIGNATURE"}});
++    let stream = format!(
++        "data: {}\n\ndata: [DONE]\n\n",
++        json!({
++            "id": "chatcmpl_gemini_custom", "model": "gemini-3.1-flash-lite",
++            "choices": [{
++                "delta": {"tool_calls": [{
++                    "index": 0, "id": "call_gemini_custom", "type": "function",
++                    "function": {"name": "apply_patch", "arguments": "{\"input\":\"fixture patch\"}"},
++                    "extra_content": extra_content
++                }]},
++                "finish_reason": "tool_calls"
++            }]
++        }),
++    );
++    let converted = chat_sse_to_responses_sse_with_request(
++        &stream,
++        &json!({"model":"gemini-3.1-flash-lite","tools":[{"type":"custom","name":"apply_patch"}]}),
++    );
++    let call = converted
++        .lines()
++        .filter_map(|line| serde_json::from_str::<Value>(line.strip_prefix("data: ")?).ok())
++        .find(|event| event["type"] == "response.output_item.done")
++        .expect("stream returned the custom call")["item"]
++        .clone();
++    assert_eq!(call["type"], "custom_tool_call");
++
++    let replayed = responses_to_chat_completions(json!({
++        "model":"gemini-3.1-flash-lite",
++        "input":[
++            call,
++            {"type":"custom_tool_call_output","call_id":"call_gemini_custom","output":"fixture result"},
++            {"type":"custom_tool_call","call_id":"call_unsigned_custom","name":"apply_patch","input":"another patch"},
++            {"type":"custom_tool_call_output","call_id":"call_unsigned_custom","output":"another result"}
++        ]
++    })).unwrap();
++    let messages = replayed["messages"].as_array().unwrap();
++    let tool_calls: Vec<_> = messages
++        .iter()
++        .filter_map(|message| message["tool_calls"].get(0))
++        .collect();
++    assert_eq!(tool_calls[0]["extra_content"], extra_content);
++    assert_eq!(
++        tool_calls[0]["function"]["arguments"],
++        "{\"input\":\"fixture patch\"}"
++    );
++    assert!(tool_calls[1].get("extra_content").is_none());
++    assert_eq!(messages[1]["tool_call_id"], "call_gemini_custom");
++    assert_eq!(messages[1]["content"], "fixture result");
++}
++
+ #[test]
+ fn chat_sse_converter_handles_partial_chunks_and_utf8_boundaries() {
+     let sse = "data: {\"id\":\"chatcmpl_utf8\",\"created\":123,\"model\":\"gpt-5.4\",\"choices\":[{\"delta\":{\"content\":\"你好\"},\"finish_reason\":\"stop\"}]}\r\n\r\n";
