@@ -1,6 +1,6 @@
 # Anti-Codex 项目全量总结与迁移接手总文档 (PROJECT_MASTER_HANDOFF)
 
-> **更新时间**：2026-11-08（北京时间 2026-11-09）
+> **更新时间**：2026-11-19（北京时间 2026-11-20）
 > **文档用途**：本文档汇总了 Anti-Codex 项目的完整背景、聊天记录演进、三层架构设计、目录与文档地图、当前版本与运行进度、Git 提交记录与远端地址、**路径搬迁（改项目地址）完整步骤**，以及供其他 AI 工具或新会话零门槛接手的操作手册。
 
 ---
@@ -67,16 +67,18 @@
 
 ---
 
-## 三、当前项目进度与运行态基线（2026-11-08）
+## 三、当前项目进度与运行态基线（2026-11-19）
 
 | 维度 | 当前状态 | 详细数据 / 证据 |
 |---|---|---|
-| **官方源版本** | `26.1111.2228.0` | `C:\Program Files\WindowsApps\OpenAI.Codex_26.1111.2228.0_x64__2p2nqsd0c76g0\app` |
-| **活动 Anti-Codex 宿主** | `26.1111.2228.0`（rev 7） | `%LOCALAPPDATA%\Anti-Codex\codex-patched-app`，Host/CLI 哈希与源完全一致 |
-| **回滚点宿主** | `26.1103.7773.0`（rev 7） | `%LOCALAPPDATA%\Anti-Codex\rollback-host`，随时可一键回滚 |
-| **CodexPlusPlus 组件** | `2.6.7` | `%LOCALAPPDATA%\Anti-Codex\components\codexplusplus\codex-plus-plus.exe`（SHA256: `e3293503...`） |
-| **Fixed Route 状态** | `ready` | UI 就绪、Manager 就绪、Antigravity 就绪（13 个直通模型 / 48 个目录模型）、6/6 共享 MCP 就绪 |
-| **单元测试与总检** | 全绿 | `brand-patch-compat` (62/62)、`host-icon-packaging` (22/22)、`prompt-policy` (10/10)、`shortcut-repair-contract` (28/28)、`sync-readiness` (`ok: true`)、`installed-overall-fast` (`ok: true`) |
+| **官方源版本** | `26.1111.9664.0` | `C:\Program Files\WindowsApps\OpenAI.Codex_26.1111.9664.0_x64__2p2nqsd0c76g0\app`（内置 codex-cli 0.169.1） |
+| **活动 Anti-Codex 宿主** | `26.1111.9664.0`（rev 7） | `%LOCALAPPDATA%\Anti-Codex\codex-patched-app`，更新检查 `up_to_date`，品牌、图标与宿主校验均通过 |
+| **回滚点宿主** | `26.1111.2228.0`（rev 7） | `%LOCALAPPDATA%\Anti-Codex\rollback-host`，随时可一键回滚 |
+| **CodexPlusPlus 组件** | `2.6.7` | `%LOCALAPPDATA%\Anti-Codex\components\codexplusplus\codex-plus-plus.exe`（SHA256: `44f16e16...`） |
+| **Fixed Route 状态** | `ready` | 默认走官方 Antigravity 通道（health `upstream=antigravity-official`），目录 79 个模型，6/6 共享 MCP 就绪 |
+| **单元测试与总检** | 全绿 | `node --test --test-concurrency=2 translator/tests/` 1334/1334，`installed-overall-fast` (`ok: true`) |
+| **2026-11-19 同步修复** | 已修 | 更新后验收原先只认 `antigravity-desktop`，选中官方 Antigravity 模型时会误判超时并自动回滚；现两种 Antigravity 通道都认可 |
+| **未完成验证** | 待办 | 原生通道完整聊天 429 尚未根治；切换到第二个 Antigravity 账号后，原聊天是否使用新账号额度尚未真实验证 |
 | **1.0 完成度清单** | 12 / 13 已勾选 | 详见 `COMPLETION_CHECKLIST.md`（第 1–12 项已完成验收；仅剩第 13 项“长任务端到端”待在需要消耗真实额度时勾选） |
 
 ---
