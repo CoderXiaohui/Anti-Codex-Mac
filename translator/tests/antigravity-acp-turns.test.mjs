@@ -417,3 +417,18 @@ test("official CLI service failures become HTTP errors instead of chat answers",
     await turns.close();
   }
 });
+
+test("a model the signed-in account cannot use is a clear 400 instead of a gateway failure", async () => {
+  const client = { async open() { const error = new Error("The signed-in Antigravity account cannot use gemini-4-neon-high."); error.statusCode = 400; error.code = "model_not_available"; throw error; } };
+  const turns = createAntigravityAcpTurns({ client, workspace: process.cwd() });
+  const adapter = createAntigravityChatAdapter({ client: turns });
+  try {
+    await assert.rejects(
+      adapter.complete({ model: "gemini-4-neon-high", messages: [{ role: "user", content: "Hi." }] }, { conversationKey: "model-unavailable" }),
+      (error) => error.statusCode === 400 && error.code === "model_not_available",
+    );
+  } finally {
+    await adapter.close();
+    await turns.close();
+  }
+});

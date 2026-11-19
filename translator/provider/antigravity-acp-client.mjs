@@ -704,11 +704,11 @@ async function selectExactModel({ transport, sessionId, model, configOptions, si
   }
 
   if (!parsed) {
-    throw new Error(`Antigravity ACP does not advertise the exact model ${model}.`);
+    throw modelUnavailableError(model);
   }
   const baseModel = getSelectOptions(modelOption).find((option) => option.value === parsed.base);
   if (!baseModel) {
-    throw new Error(`Antigravity ACP does not advertise the exact model ${model}.`);
+    throw modelUnavailableError(model);
   }
   options = await setConfigOptionIfNeeded({
     transport,
@@ -791,6 +791,14 @@ function normalizeEffort(value) {
   if (typeof value !== "string") return "";
   const normalized = value.trim().toLowerCase().replace(/[\s_-]/g, "");
   return normalized === "extra" ? "xhigh" : normalized;
+}
+
+function modelUnavailableError(model) {
+  // The signed-in account decides which models the CLI offers (a free account lacks the newer ones).
+  const error = new Error(`The signed-in Antigravity account cannot use ${model}. Choose another model or switch accounts.`);
+  error.statusCode = 400;
+  error.code = "model_not_available";
+  return error;
 }
 
 function explicitHttpStatusFromRpcData(data) {

@@ -864,6 +864,9 @@ export function mapAntigravityProviderError(error, ErrorType) {
     return new ErrorType(message, { cause: error, statusCode: acpHttpStatus, code });
   }
   const statusCode = Number(error?.statusCode ?? error?.status ?? 0);
+  if (error?.code === "model_not_available") {
+    return new ErrorType(message, { cause: error, statusCode: 400, code: "model_not_available", type: "invalid_request_error" });
+  }
   if (error?.code === "prompt_budget_insufficient") {
     return new ErrorType(message, {
       cause: error,
