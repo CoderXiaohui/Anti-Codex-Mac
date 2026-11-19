@@ -932,6 +932,19 @@ async function runSupervisor(plan) {
           }
           const currentAntigravityCatalog = buildRuntimeCatalogFromBundled(bundledCatalog, availableModels);
           refreshedAntigravityCatalog = preserveHiddenCompatibilityModels(currentAntigravityCatalog, antigravityCatalog);
+        } else {
+          // The official route does not depend on Desktop, but its catalog still lists Desktop-only
+          // models. Reconcile that list when Desktop answers so retired models stop being offered.
+          try {
+            const readiness = await antigravityClient.getReadiness();
+            const availableModels = readiness?.signedIn === true ? await antigravityClient.listModels() : [];
+            if (Array.isArray(availableModels) && availableModels.length > 0) {
+              const currentAntigravityCatalog = buildRuntimeCatalogFromBundled(bundledCatalog, availableModels);
+              refreshedAntigravityCatalog = preserveHiddenCompatibilityModels(currentAntigravityCatalog, antigravityCatalog);
+            }
+          } catch {
+            // Desktop is optional for the official route; keep the saved Desktop list.
+          }
         }
         const liveSettings = JSON.parse(readFileSync(join(plan.paths.codexPlusPlusState, "settings.json"), "utf8"));
         const thirdPartyCatalogOptions = thirdPartyCatalogOptionsFromSettings(liveSettings, thirdPartyRoute);
@@ -1141,6 +1154,12 @@ async function runSupervisor(plan) {
       },
     };
     writeStatus(plan.paths.statusFile, status);
+
+    if (officialSelected) {
+      // The desktop catalog is only read when a desktop model is selected, so retired desktop models
+      // can linger. Reconcile it in the background once the official route is already serving chats.
+      void refreshModelsCallback().catch(() => {});
+    }
 
     let clientMissingSince = null;
     while (!closing) {
