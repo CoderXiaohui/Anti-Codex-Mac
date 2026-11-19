@@ -252,10 +252,24 @@ function normalizeToolSchema(schema) {
   return normalized;
 }
 
+// Tool names every provider behind the official route accepts, including Claude.
+const PORTABLE_TOOL_NAME = /^[a-zA-Z0-9_-]{1,128}$/;
+
 function withAntigravityToolAliases(tools) {
-  const aliases = [...tools];
-  const canonicalNameByNativeName = new Map(tools.map((tool) => [tool.name, tool.name]));
-  const names = new Set(canonicalNameByNativeName.keys());
+  const aliases = [];
+  const canonicalNameByNativeName = new Map();
+  const names = new Set();
+  for (const tool of tools) {
+    // Codex sends some host-qualified names (for example "functions.exec") that Claude rejects.
+    // Expose them under a portable name and map calls back to the original host tool.
+    const nativeName = PORTABLE_TOOL_NAME.test(tool.name)
+      ? tool.name
+      : tool.name.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 128);
+    if (!nativeName || names.has(nativeName)) continue;
+    aliases.push(nativeName === tool.name ? tool : { ...tool, name: nativeName });
+    names.add(nativeName);
+    canonicalNameByNativeName.set(nativeName, tool.name);
+  }
   const shellCommand = tools.find((tool) => tool.name === "shell_command");
   if (shellCommand && !names.has("command")) {
     aliases.push({
@@ -263,9 +277,10 @@ function withAntigravityToolAliases(tools) {
       description: `${shellCommand.description || "Run a shell command"} (Antigravity compatibility alias for shell_command.)`,
       inputSchema: shellCommand.inputSchema,
     });
+    names.add("command");
     canonicalNameByNativeName.set("command", "shell_command");
   }
-  for (const [name, alias] of [["exec_command", "functions.exec"], ["apply_patch", "functions.apply_patch"]]) {
+  for (const [name, alias] of [["exec_command", "functions_exec"], ["apply_patch", "functions_apply_patch"]]) {
     const tool = tools.find((candidate) => candidate.name === name);
     if (!tool || names.has(alias)) continue;
     aliases.push({
@@ -278,7 +293,6 @@ function withAntigravityToolAliases(tools) {
   }
   return { tools: aliases, canonicalNameByNativeName };
 }
-
 function mcpToolResult(output, isError) {
   const content = Array.isArray(output)
     ? output.map(mcpContentPart)

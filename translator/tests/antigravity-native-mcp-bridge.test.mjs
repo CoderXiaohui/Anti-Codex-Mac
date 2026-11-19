@@ -207,15 +207,15 @@ test("native MCP bridge accepts host-qualified function aliases", async () => {
     assert.deepEqual(bridge.customAgentSpec.customizationConfig.toolNames, ["exec_command", "apply_patch"]);
     const listed = await rpc(bridge.url, 30, "tools/list", {});
     assert.deepEqual(listed.result.tools.map((tool) => tool.name), [
-      "exec_command", "apply_patch", "functions.exec", "functions.apply_patch",
+      "exec_command", "apply_patch", "functions_exec", "functions_apply_patch",
     ]);
     const callResponse = rpc(bridge.url, 31, "tools/call", {
-      name: "functions.exec",
+      name: "functions_exec",
       arguments: { cmd: "Get-Location" },
     });
     const call = await bridge.waitForCall({ timeoutMs: 1000 });
     assert.equal(call.name, "exec_command");
-    assert.equal(call.nativeName, "functions.exec");
+    assert.equal(call.nativeName, "functions_exec");
     assert.deepEqual(call.arguments, { cmd: "Get-Location" });
     assert.equal(bridge.completeCall(call.callId, "ok"), true);
     assert.equal((await callResponse).result.content[0].text, "ok");
@@ -349,7 +349,7 @@ test("native MCP bridge updateTools aliases canonicalize for shell_command and h
 
     const listed = await rpc(bridge.url, 10, "tools/list", {});
     const names = listed.result.tools.map((t) => t.name).sort();
-    assert.deepEqual(names, ["apply_patch", "command", "exec_command", "functions.apply_patch", "functions.exec", "shell_command"].sort());
+    assert.deepEqual(names, ["apply_patch", "command", "exec_command", "functions_apply_patch", "functions_exec", "shell_command"].sort());
 
     const agentSpec = bridge.customAgentSpec;
     assert.deepEqual(agentSpec.customTools.sort(), ["apply_patch", "exec_command", "shell_command"].sort());
@@ -362,12 +362,31 @@ test("native MCP bridge updateTools aliases canonicalize for shell_command and h
     assert.equal(bridge.completeCall(callAlias.callId, "ok"), true);
     assert.equal((await callAliasResponse).result.content[0].text, "ok");
 
-    const callHostResponse = rpc(bridge.url, 12, "tools/call", { name: "functions.exec", arguments: { cmd: "pwd" } });
+    const callHostResponse = rpc(bridge.url, 12, "tools/call", { name: "functions_exec", arguments: { cmd: "pwd" } });
     const callHost = await bridge.waitForCall({ timeoutMs: 1000 });
     assert.equal(callHost.name, "exec_command");
-    assert.equal(callHost.nativeName, "functions.exec");
+    assert.equal(callHost.nativeName, "functions_exec");
     assert.equal(bridge.completeCall(callHost.callId, "ok"), true);
     assert.equal((await callHostResponse).result.content[0].text, "ok");
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("native MCP bridge exposes Codex tools with dotted names under names Claude accepts", async () => {
+  const bridge = await createAntigravityNativeMcpBridge({
+    tools: [{ name: "mcp.server.lookup", description: "Lookup", parameters: { type: "object" } }],
+  });
+  try {
+    const listed = await rpc(bridge.url, 40, "tools/list", {});
+    const names = listed.result.tools.map((tool) => tool.name);
+    assert.deepEqual(names, ["mcp_server_lookup"]);
+    assert.ok(names.every((name) => /^[a-zA-Z0-9_-]{1,128}$/.test(name)));
+    const callResponse = rpc(bridge.url, 41, "tools/call", { name: "mcp_server_lookup", arguments: { q: "x" } });
+    const call = await bridge.waitForCall({ timeoutMs: 1000 });
+    assert.equal(call.name, "mcp.server.lookup");
+    assert.equal(bridge.completeCall(call.callId, "found"), true);
+    assert.equal((await callResponse).result.content[0].text, "found");
   } finally {
     await bridge.close();
   }
