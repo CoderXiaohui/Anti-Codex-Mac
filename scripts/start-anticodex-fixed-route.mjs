@@ -807,7 +807,7 @@ async function runSupervisor(plan) {
       fixedHealthUrl: `http://127.0.0.1:${plan.ports.health}/anticodex/fixed-route/health`,
       adapterAuthToken: plan.route.localProxyKey,
       refreshModels: () => refreshModelsCallback(),
-      onAccountChanged: () => provider?.adapter?.resetSessions?.(),
+      onAccountChanging: () => provider?.adapter?.resetSessions?.(),
     });
     await managerService.listen();
     status.processes.managerService = process.pid;
