@@ -2262,7 +2262,9 @@ export function createAntiCodexManagerService(options = {}) {
           if (accountJob === job && job.status === "running" && typeof message === "string") job.message = message.slice(0, 240);
         };
         accountJob = job;
-        void Promise.resolve().then(() => accountManager[methods[action]](args)).then(() => {
+        void Promise.resolve().then(() => accountManager[methods[action]](args)).then(async () => {
+          // Official sessions keep the account they started with; restart them on the newly active one.
+          if (["activate", "login"].includes(action)) await options.onAccountChanged?.();
           job.status = "completed";
           job.message = ["activate", "login"].includes(action) ? "账号已启用，Antigravity 已打开并完成登录核验。" : "账号操作已完成。";
         }, (error) => {

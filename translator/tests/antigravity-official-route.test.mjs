@@ -123,3 +123,37 @@ test("models the official CLI serves get official entries and plain desktop sele
     rmSync(temp, { recursive: true, force: true });
   }
 });
+
+test("resetting official sessions after an account switch starts the next turn in a new session with the chat history", async () => {
+  const temp = mkdtempSync(join(tmpdir(), "anticodex-official-test-"));
+  const desktop = { stream() { throw Error("desktop was called"); }, complete() { throw Error("desktop was called"); }, close: async () => {} };
+  const opened = [];
+  let closedSessions = 0;
+  const fakeClient = { async open(args) {
+    const sessionId = "acp-account-" + (opened.length + 1);
+    opened.push(args);
+    return {
+      sessionId,
+      async prompt({ onText, text }) { onText(sessionId + ":" + JSON.stringify(text).includes("first answer")); return { stopReason: "end_turn" }; },
+      async close() { closedSessions += 1; },
+    };
+  } };
+  let route;
+  try {
+    route = createOfficialAcpRoute({ desktop, client: fakeClient, temp, officialModels: () => [{ slug: officialModel, display_name: "official" }] });
+    const first = await route.complete({ model: officialModel, messages: [{ role: "user", content: "Hi." }] }, { conversationKey: "switch-thread" });
+    assert.match(first.choices[0].message.content, /^acp-account-1:/);
+    await route.resetSessions();
+    assert.equal(closedSessions, 1);
+    const second = await route.complete({ model: officialModel, messages: [
+      { role: "user", content: "Hi." },
+      { role: "assistant", content: "first answer" },
+      { role: "user", content: "Again." },
+    ] }, { conversationKey: "switch-thread" });
+    assert.equal(opened.length, 2);
+    assert.equal(second.choices[0].message.content, "acp-account-2:true");
+  } finally {
+    await route?.close();
+    rmSync(temp, { recursive: true, force: true });
+  }
+});

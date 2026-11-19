@@ -113,6 +113,13 @@ export function createOfficialAcpRoute({desktop, temp, officialModels, cachedDes
     }
     return routes.get(model).adapter;
   }
+  function closeRoutes() {
+    const current = [...routes.values()];
+    routes.clear();
+    return Promise.allSettled(current.map(async ({ adapter, turns }) => {
+      try { await turns.close(); } finally { await adapter.close(); }
+    }));
+  }
   function input(body) {
     const model = officialSlug(body?.model);
     return model ? { ...body, model: model.slice(OFFICIAL_MODEL_PREFIX.length) } : body;
@@ -140,12 +147,16 @@ export function createOfficialAcpRoute({desktop, temp, officialModels, cachedDes
       return adapter === desktop ? result : { ...result, model: body.model };
     },
     getDiagnostics: () => desktop.getDiagnostics?.(),
+    // Each official session runs in its own CLI process that keeps the account it started with.
+    // After an account switch, end them so the next message starts on the new account; the chat
+    // history is replayed into the new session.
+    async resetSessions() {
+      const failed = (await closeRoutes()).find(result => result.status === "rejected");
+      if (failed) throw failed.reason;
+    },
     async close() {
       try {
-        const shutdowns = [...routes.values()].map(async ({ adapter, turns }) => {
-          try { await turns.close(); } finally { await adapter.close(); }
-        });
-        const results = await Promise.allSettled([...shutdowns, desktop.close()]);
+        const results = [...await closeRoutes(), ...await Promise.allSettled([desktop.close()])];
         const failed = results.find(result => result.status === "rejected");
         if (failed) throw failed.reason;
       } finally {
