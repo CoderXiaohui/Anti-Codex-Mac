@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createAntigravityChatAdapter } from "../provider/antigravity-chat-adapter.mjs";
 
-import { createAntigravityAcpTurns } from "../provider/antigravity-acp-turns.mjs";
+import { createAntigravityAcpTurns, officialServiceError } from "../provider/antigravity-acp-turns.mjs";
 
 let currentTurns;
 let currentAdapter;
@@ -388,3 +388,32 @@ async function waitUntil(predicate, timeoutMs = 1000) {
   }
   throw new Error("condition did not become true before timeout");
 }
+
+test("official CLI service failures become HTTP errors instead of chat answers", async () => {
+  assert.equal(officialServiceError("\n\u26a0 RESOURCE_EXHAUSTED (code 429): quota\n").statusCode, 429);
+  assert.equal(officialServiceError("\u26a0 UNAVAILABLE (code 503): No capacity available for model x").statusCode, 503);
+  assert.equal(officialServiceError("\u26a0 This service has been disabled in this account for violation of Terms of Service.").statusCode, 403);
+  assert.equal(officialServiceError("\u26a0 INVALID_ARGUMENT (code 400): bad tool name").statusCode, 400);
+  assert.equal(officialServiceError("A normal answer"), null);
+
+  const client = {
+    async open() {
+      return {
+        sessionId: "acp-service-error",
+        async prompt({ onText }) { onText("\n\u26a0 RESOURCE_EXHAUSTED (code 429): Resource has been exhausted.\n"); return { stopReason: "end_turn" }; },
+        async close() {},
+      };
+    },
+  };
+  const turns = createAntigravityAcpTurns({ client, workspace: process.cwd() });
+  const adapter = createAntigravityChatAdapter({ client: turns });
+  try {
+    await assert.rejects(
+      adapter.complete({ model: "gemini-4-argon-high", messages: [{ role: "user", content: "Hi." }] }, { conversationKey: "service-error" }),
+      (error) => error.statusCode === 429 && error.code === "quota_exceeded",
+    );
+  } finally {
+    await adapter.close();
+    await turns.close();
+  }
+});

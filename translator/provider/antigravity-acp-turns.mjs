@@ -216,6 +216,14 @@ function startPrompt(turn, content, requestSignal) {
   const onText = (value) => {
     const delta = textDelta(value);
     if (!delta) return;
+    // The official CLI reports service failures (quota, capacity, account bans) as a reply line
+    // that starts with a warning sign. Surface them as errors so Codex shows and retries them
+    // instead of saving the failure into the chat as an answer.
+    const serviceError = !promptState.emittedText ? officialServiceError(delta) : null;
+    if (serviceError) {
+      promptState.serviceError = serviceError;
+      return;
+    }
     promptState.emittedText = true;
     turn.queue.push({ type: "text_delta", delta, generation });
   };
@@ -233,6 +241,12 @@ function startPrompt(turn, content, requestSignal) {
   turn.promptPromise = Promise.resolve(result).then(
     (value) => {
       if (generation !== turn.promptGeneration || turn.closed) return;
+      if (promptState.serviceError) {
+        turn.promptFinished = true;
+        unbindRequestSignal(turn);
+        turn.queue.push({ type: "error", error: promptState.serviceError, generation });
+        return;
+      }
       const finalText = promptResultText(value);
       if (finalText && !promptState.emittedText) turn.queue.push({ type: "text_delta", delta: finalText, generation });
       turn.promptFinished = true;
@@ -569,6 +583,26 @@ async function closeTurn(turn) {
   await Promise.resolve(turn.session.close()).catch(() => {});
   if (turn.bridgePump) await Promise.allSettled([turn.bridgePump]);
   turn.onClosed?.();
+}
+
+export function officialServiceError(text) {
+  const match = /^\s*\u26a0\uFE0F?\s*(.+?)\s*$/su.exec(String(text ?? ""));
+  if (!match) return null;
+  const message = match[1];
+  const code = /\(code (\d{3})\)/u.exec(message)?.[1];
+  let statusCode = code ? Number(code) : 502;
+  if (/RESOURCE_EXHAUSTED|quota|rate limit|usage limit/iu.test(message)) statusCode = 429;
+  else if (/UNAVAILABLE|No capacity available/iu.test(message)) statusCode = 503;
+  else if (/disabled in this account|violation of Terms of Service|not logged in|sign in/iu.test(message)) statusCode = 403;
+  const errorCode = statusCode === 429 ? "quota_exceeded"
+    : statusCode === 503 ? "upstream_service_error"
+      : statusCode === 403 ? "account_unavailable"
+        : statusCode === 400 ? "invalid_request_error"
+          : "upstream_error";
+  const error = new AcpTurnError(message, { statusCode, code: errorCode });
+  // Lets the shared error mapping keep 429/503 instead of re-deriving them from the text.
+  if ([429, 502, 503, 504].includes(statusCode)) error.acpHttpStatus = statusCode;
+  return error;
 }
 
 class AcpTurnError extends Error {
