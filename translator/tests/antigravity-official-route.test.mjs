@@ -86,3 +86,40 @@ test("an official Antigravity entry identifies the real agent and retains all ot
   assert.equal(native.base_instructions,base);
   assert.equal(native.model_messages.instructions_template,base);
 });
+
+test("models the official CLI serves get official entries and plain desktop selections use the official route", async () => {
+  const hiddenOnDesktop = { ...entry, slug: "claude-opus-5-5-high", display_name: "Claude Opus 5.5 (High)", visibility: "hide" };
+  const template = { ...entry, slug: "template", base_instructions: "You are Codex, an agent based on GPT-6. Keep approvals." };
+  const official = getOfficialModelCatalog([
+    { id: "claude-opus-5-5-high", label: "Claude Opus 5.5 (High)" },
+    { id: "gemini-4-neon-low", label: "Gemini 4 Neon (Low)" },
+  ], { models: [hiddenOnDesktop] }, template);
+  assert.deepEqual(official.map(model => [model.slug, model.visibility]), [
+    ["anticodex/official/claude-opus-5-5-high", "list"],
+    ["anticodex/official/gemini-4-neon-low", "list"],
+  ]);
+  assert.equal(official[1].default_reasoning_level, "low");
+  assert.match(official[1].base_instructions, /^You are the Google Antigravity agent/);
+
+  const catalog = buildUnifiedModelCatalog({ models: [entry] }, { antigravityCatalog: { models: [entry] }, officialModels: getOfficialModelCatalog([{ id: entry.slug, label: entry.display_name }], { models: [entry] }) });
+  assert.equal(catalog.models.find(model => model.slug === entry.slug).visibility, "hide");
+
+  const temp = mkdtempSync(join(tmpdir(), "anticodex-official-test-"));
+  const desktop = { stream() { throw Error("desktop was called"); }, complete() { throw Error("desktop was called"); }, close: async () => {} };
+  let openedModel;
+  const fakeClient = { async open(args) {
+    openedModel = args.model;
+    return { sessionId: "acp-plain", async prompt({ onText }) { onText("official answer"); return { stopReason: "end_turn" }; }, async close() {} };
+  } };
+  let route;
+  try {
+    route = createOfficialAcpRoute({ desktop, client: fakeClient, temp, officialModels: () => [{ slug: officialModel, display_name: "official" }] });
+    const result = await route.complete({ model: entry.slug, messages: [{ role: "user", content: "Hello." }] }, { conversationKey: "plain-thread" });
+    assert.equal(result.model, entry.slug);
+    assert.equal(openedModel, entry.slug);
+    await assert.rejects(route.complete({ model: "claude-sonnet-4-6", messages: [] }), /desktop was called/);
+  } finally {
+    await route?.close();
+    rmSync(temp, { recursive: true, force: true });
+  }
+});

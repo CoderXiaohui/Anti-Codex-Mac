@@ -845,7 +845,7 @@ async function runSupervisor(plan) {
     }
     if (plan.provider === "antigravity") {
       try {
-        officialModels = getOfficialModelCatalog(await listOfficialAcpModels(), antigravityCatalog);
+        officialModels = getOfficialModelCatalog(await listOfficialAcpModels(), antigravityCatalog, selectNativeToolCatalogTemplate(bundledCatalog));
       } catch {
         status.officialModelDiscovery = "temporarily_unavailable";
       }
@@ -938,7 +938,7 @@ async function runSupervisor(plan) {
         const previousUnifiedCatalog = readCatalogSafely(unifiedCatalogPath) ?? catalog;
         let refreshedOfficial = officialModels;
         try {
-          refreshedOfficial = getOfficialModelCatalog(await listOfficialAcpModels(), refreshedAntigravityCatalog);
+          refreshedOfficial = getOfficialModelCatalog(await listOfficialAcpModels(), refreshedAntigravityCatalog, selectNativeToolCatalogTemplate(bundledCatalog));
         } catch (error) {
           if (officialSelected) throw error;
           // A temporarily unavailable optional provider does not retire its saved models.
@@ -1748,9 +1748,13 @@ export function buildUnifiedModelCatalog(bundled, options = {}) {
   for (const entry of options.officialModels ?? []) {
     add(entry, entry.visibility === "hide" ? "hide" : "list");
   }
+  const officialSlugs = new Set((options.officialModels ?? []).map(entry => entry.slug));
   for (const entry of antigravityModels) {
     if (!entry?.slug) continue;
-    add({ ...entry, display_name: "Antigravity · " + (entry.display_name || entry.slug) }, entry.visibility === "hide" ? "hide" : "list");
+    // A desktop model the official CLI also serves already routes to the official entry; keep it
+    // resolvable for existing chats without listing the same model twice.
+    const servedOfficially = officialSlugs.has(OFFICIAL_MODEL_PREFIX + entry.slug);
+    add({ ...entry, display_name: "Antigravity · " + (entry.display_name || entry.slug) }, entry.visibility === "hide" || servedOfficially ? "hide" : "list");
   }
   for (const model of thirdPartyModels) {
     add({

@@ -7,6 +7,7 @@ import { createAntigravityChatAdapter, ChatAdapterError } from "./antigravity-ch
 import { createAcpEnvironment, createAntigravityAcpClient, resolveAntigravityAcpExecutable } from "./antigravity-acp-client.mjs";
 import { createAntigravityAcpTurns } from "./antigravity-acp-turns.mjs";
 import { OFFICIAL_MODEL_PREFIX } from "../antigravity-contract.mjs";
+import { antigravityReasoningEffortFor } from "../antigravity-model-catalog.mjs";
 
 const runFile = promisify(execFile);
 export { OFFICIAL_MODEL_PREFIX };
@@ -33,12 +34,14 @@ export async function listOfficialAcpModels(env = process.env) {
   return parseOfficialModelList(stdout);
 }
 
-export function getOfficialModelCatalog(listed, nativeCatalog) {
+export function getOfficialModelCatalog(listed, nativeCatalog, template = null) {
   const models = new Map((nativeCatalog?.models ?? []).map(entry => [entry.slug, entry]));
   return listed.flatMap(({id, label}) => {
-    const model = models.get(id);
-    if (!model || model.visibility === "hide") return [];
-    const official = {...model, slug: OFFICIAL_MODEL_PREFIX + id, display_name: "Antigravity 官方 · " + label};
+    // The official CLI list is authoritative. Desktop may hide or never list a model the CLI serves,
+    // so build those entries from the bundled host template instead of dropping them.
+    const model = models.get(id) ?? modelFromTemplate(template, id, label);
+    if (!model) return [];
+    const official = {...model, slug: OFFICIAL_MODEL_PREFIX + id, display_name: "Antigravity 官方 · " + label, visibility: "list"};
     // The bundled host template names its own GPT model. Only adapt that identity
     // declaration for the external agent. Keep policy and user instructions intact.
     const correctIdentity = value => value.replace(
@@ -89,9 +92,16 @@ function prepareProfile(temp) {
 export function createOfficialAcpRoute({desktop, temp, officialModels, cachedDesktopModels, adapterOptions, client = createAntigravityAcpClient()}) {
   let profile;
   const routes = new Map();
+  // Desktop entries the official CLI also serves run on the official route, so they share its
+  // working quota path instead of the desktop Cascade bridge.
+  function officialSlug(model) {
+    if (typeof model !== "string") return "";
+    if (model.startsWith(OFFICIAL_MODEL_PREFIX)) return model;
+    return officialModels().some(entry => entry.slug === OFFICIAL_MODEL_PREFIX + model) ? OFFICIAL_MODEL_PREFIX + model : "";
+  }
   function dispatch(body) {
-    const model = body?.model;
-    if (typeof model !== "string" || !model.startsWith(OFFICIAL_MODEL_PREFIX)) return desktop;
+    const model = officialSlug(body?.model);
+    if (!model) return desktop;
     if (!officialModels().some(entry => entry.slug === model && entry.visibility !== "hide")) {
       throw new ChatAdapterError("所选官方模型当前不可用，请刷新模型列表。", { statusCode: 400, code: "model_not_available" });
     }
@@ -104,9 +114,8 @@ export function createOfficialAcpRoute({desktop, temp, officialModels, cachedDes
     return routes.get(model).adapter;
   }
   function input(body) {
-    return typeof body?.model === "string" && body.model.startsWith(OFFICIAL_MODEL_PREFIX)
-      ? { ...body, model: body.model.slice(OFFICIAL_MODEL_PREFIX.length) }
-      : body;
+    const model = officialSlug(body?.model);
+    return model ? { ...body, model: model.slice(OFFICIAL_MODEL_PREFIX.length) } : body;
   }
   return {
     account(options = {}) {
@@ -152,4 +161,16 @@ export function createOfficialAcpRoute({desktop, temp, officialModels, cachedDes
 
 function listEntry(model) {
   return { object: "model", id: model.slug, display_name: model.display_name, owned_by: "antigravity" };
+}
+
+function modelFromTemplate(template, id, label) {
+  if (!template) return null;
+  const effort = antigravityReasoningEffortFor(id, label);
+  return {
+    ...template,
+    slug: id,
+    description: `Antigravity official model ${label}`,
+    default_reasoning_level: effort,
+    supported_reasoning_levels: [{ effort, description: `Antigravity ${effort} reasoning` }],
+  };
 }
