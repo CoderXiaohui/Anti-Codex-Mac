@@ -711,7 +711,7 @@ test("host sync stages, activates and recovers CodexPlusPlus with the copied Cod
   assert.match(sync, /if \(\$syncCompleted -and \$refreshFeaturesDuringSync\)/);
   assert.match(sync, /\$provider -eq "antigravity"/);
   assert.match(sync, /\$provider -eq "third-party"/);
-  assert.match(sync, /"antigravity-desktop"/);
+  assert.match(sync, /"antigravity-desktop", "antigravity-official"/);
   assert.match(sync, /"codexplusplus-third-party"/);
   assert.match(sync, /\$health\.routeReady -eq \$true/);
   assert.match(sync, /\$acceptedPatches\.Count -eq 0/);

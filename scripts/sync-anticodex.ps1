@@ -927,14 +927,15 @@ function Invoke-AntiCodexPostSyncAcceptance {
             $sourceVersion = [string]$marker.source.packageVersion
             $modelCount = [int]$health.modelCount
             $provider = [string]$health.provider
+            # Antigravity models run either through the desktop Cascade bridge or the official session route.
             $expectedUpstream = if ($provider -eq "antigravity") {
-                "antigravity-desktop"
+                @("antigravity-desktop", "antigravity-official")
             } elseif ($provider -eq "third-party") {
-                "codexplusplus-third-party"
+                @("codexplusplus-third-party")
             } else {
-                ""
+                @()
             }
-            $upstreamReady = $expectedUpstream -and [string]$health.upstream -eq $expectedUpstream
+            $upstreamReady = $expectedUpstream -contains [string]$health.upstream
             $routeReady = $health.routeReady -eq $true
             if ($health.ok -eq $true -and $routeReady -and $modelCount -gt 0 -and $upstreamReady -and $sourceVersion) {
                 return [pscustomobject]@{
@@ -942,7 +943,7 @@ function Invoke-AntiCodexPostSyncAcceptance {
                     message = "Post-sync acceptance passed: active host $sourceVersion, $modelCount model(s), provider $provider ready."
                 }
             }
-            $lastFailure = "healthOk=$($health.ok), routeReady=$routeReady, provider=$provider, upstream=$($health.upstream), expectedUpstream=$expectedUpstream, modelCount=$modelCount, sourceVersion=$sourceVersion"
+            $lastFailure = "healthOk=$($health.ok), routeReady=$routeReady, provider=$provider, upstream=$($health.upstream), expectedUpstream=$($expectedUpstream -join '|'), modelCount=$modelCount, sourceVersion=$sourceVersion"
         } catch {
             $lastFailure = $_.Exception.Message
         }
