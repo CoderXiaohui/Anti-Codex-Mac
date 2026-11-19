@@ -78,7 +78,11 @@
 | **Fixed Route 状态** | `ready` | 默认走官方 Antigravity 通道（health `upstream=antigravity-official`），目录 79 个模型，6/6 共享 MCP 就绪 |
 | **单元测试与总检** | 全绿 | `node --test --test-concurrency=2 translator/tests/` 1334/1334，`installed-overall-fast` (`ok: true`) |
 | **2026-11-19 同步修复** | 已修 | 更新后验收原先只认 `antigravity-desktop`，选中官方 Antigravity 模型时会误判超时并自动回滚；现两种 Antigravity 通道都认可 |
-| **未完成验证** | 待办 | 原生通道完整聊天 429 尚未根治；切换到第二个 Antigravity 账号后，原聊天是否使用新账号额度尚未真实验证 |
+| **429 根治（2026-11-19）** | 已修 | 旧桌面转发在 Antigravity 2.33 上连简单请求都返回 503/超时，带完整 Codex 说明时报 429。现在凡是官方 CLI 能用的模型（含 Neon、Claude Opus/Sonnet 5.5）一律走官方通道；桌面已下架的 Claude 4.6 自动从列表移除 |
+| **官方通道兼容修复** | 已修 | Claude 拒收带点号的工具名，已改为合规别名；官方 CLI 以“⚠”文字回传的 429/503/封号错误改为真正的错误码，不再写进聊天；账号无权用的模型返回清晰的 400 |
+| **账号切换** | 已修并实测 | 切换前先结束官方会话（否则切换被拒），之后新消息在新账号上开新会话并带上聊天记录。a0→xu→a0 往返实测：同一聊天三轮都答对，登录身份逐次匹配 |
+| **实窗验收** | 通过 | 安装后的真实窗口：Claude Opus 5.5、Claude Sonnet 5.5、Gemini 4 Neon、Argon、Carbon 各 3 轮（含真实读文件），全部正确，单一聊天，无 429/502/503 |
+| **仍需注意** | 外部因素 | dd*** 账号被 Google 以违反服务条款停用；xu*** 是免费账号，只能用 3.8 Flash 和旧模型；本地第三方接口 localhost:8082 当前未运行 |
 | **1.0 完成度清单** | 12 / 13 已勾选 | 详见 `COMPLETION_CHECKLIST.md`（第 1–12 项已完成验收；仅剩第 13 项“长任务端到端”待在需要消耗真实额度时勾选） |
 
 ---
