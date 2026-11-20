@@ -401,6 +401,33 @@ test("prompt timeout sends ACP cancellation and terminates the owned process", a
   }
 });
 
+test("a long prompt that keeps showing progress is not cut off by the idle limit", async () => {
+  const fake = makeSpawner({
+    onPrompt(message, child) {
+      let ticks = 0;
+      const timer = setInterval(() => {
+        ticks += 1;
+        child.notify("session/update", {
+          sessionId: "session-1",
+          update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "." } },
+        });
+        if (ticks === 6) {
+          clearInterval(timer);
+          child.respond(message.id, { stopReason: "end_turn" });
+        }
+      }, 15);
+    },
+  });
+  const client = createAntigravityAcpClient({ spawn: fake.spawn, executablePath: FAKE_EXECUTABLE, promptTimeoutMs: 40 });
+  const session = await client.open({ cwd: "C:\\workspace", model: "gemini-4-argon" });
+  try {
+    const result = await session.prompt({ text: "Work for a while.", onText() {} });
+    assert.equal(result.stopReason, "end_turn");
+  } finally {
+    await session.close();
+  }
+});
+
 test("rejects remote MCP URLs outside the fixed loopback secret route", async () => {
   const fake = makeSpawner();
   const client = createAntigravityAcpClient({ spawn: fake.spawn, executablePath: FAKE_EXECUTABLE });

@@ -85,3 +85,27 @@ test("profile dropdown patch leaves unrelated bundles unchanged", () => {
   const source = "function unrelated(){return `Settings`}";
   assert.equal(patchCompiledProfileDropdownSettings(source), source);
 });
+
+test("Codex 26.1117 settings component keeps Settings and adds the Manager entry in every menu", () => {
+  const source = 'function at(e){let t,a,s=(0,l.c)(3);return s[0]===Symbol.for("react.memo_cache_sentinel")?(t=(0,n.jsx)(_.A,{id:"codex.profileDropdown.settingsPage",defaultMessage:"Settings"}),s[0]=t):t=s[0],s[1]!==e?(a=(0,n.jsx)(D.tJ,{leftIconAsset:e5.T,...e,children:t}),s[1]=e,s[2]=a):a=s[2],a}';
+  const patched = patchCompiledProfileDropdownSettings(source);
+  assert.equal(Buffer.byteLength(patched), Buffer.byteLength(source));
+  assert.equal(patchCompiledProfileDropdownSettings(patched), patched);
+  const rendered = [];
+  const n = { jsx: (type, props, key) => ({ type, props, key }) };
+  const D = { tJ: "MenuItem" };
+  const _ = { A: "Message" };
+  const e5 = { T: "gear" };
+  let managerOpened = 0;
+  const at = new Function("n", "D", "_", "e5", "l", "__ANTICODEX_OPEN_MANAGER__", `${patched}; return at;`)(n, D, _, e5, { c: () => [] }, () => { managerOpened += 1; });
+  const items = at({ onClick: () => rendered.push("settings"), keyboardShortcut: "Ctrl+," });
+  assert.equal(items.length, 2);
+  assert.equal(items[0].props.leftIconAsset, "gear");
+  assert.equal(items[0].props.keyboardShortcut, "Ctrl+,");
+  items[0].props.onClick();
+  assert.deepEqual(rendered, ["settings"]);
+  assert.equal(items[1].key, "anticodex-manager");
+  assert.equal(items[1].props.children, "\u7ba1\u7406");
+  items[1].props.onClick();
+  assert.equal(managerOpened, 1);
+});

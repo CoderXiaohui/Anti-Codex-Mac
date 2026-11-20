@@ -1,6 +1,19 @@
 export function patchCompiledProfileDropdownSettings(text) {
   if (!/id:[`"]codex\.profileDropdown\.settingsPage[`"]/.test(text)) return text;
   if (text.includes("anticodex-manager") && text.includes("__ANTICODEX_OPEN_MANAGER__")) return text;
+  // Codex 26.1117 moved the settings entry into its own small component (props spread onto the menu
+  // item). Render the manager entry right after it, so every menu that shows Settings also shows 管理.
+  const component = /(?<head>function (?<name>[\w$]+)\((?<props>[\w$]+)\)\{let (?<label>[\w$]+),(?<item>[\w$]+),(?<cache>[\w$]+)=\(0,(?<memo>[\w$.]+)\)\(3\);return \k<cache>\[0\]===Symbol\.for\("react\.memo_cache_sentinel"\)\?\(\k<label>=\(0,(?<jsx>[\w$]+)\.jsx\)\((?<message>[\w$.]+),\{id:"codex\.profileDropdown\.settingsPage",defaultMessage:"Settings"\}\),\k<cache>\[0\]=\k<label>\):\k<label>=\k<cache>\[0\],)\k<cache>\[1\]!==\k<props>\?\(\k<item>=\(0,\k<jsx>\.jsx\)\((?<menu>[\w$.]+),\{leftIconAsset:(?<asset>[\w$.]+),\.\.\.\k<props>,children:\k<label>\}\),\k<cache>\[1\]=\k<props>,\k<cache>\[2\]=\k<item>\):\k<item>=\k<cache>\[2\],\k<item>\}/;
+  const componentMatch = component.exec(text);
+  if (componentMatch?.groups) {
+    const { name, props, label, jsx, message, menu, asset } = componentMatch.groups;
+    // Render without the memo cache: the label is static and the two items are cheap.
+    const replacement = `function ${name}(${props}){let ${label}=(0,${jsx}.jsx)(${message},{id:"codex.profileDropdown.settingsPage",defaultMessage:"Settings"});return[(0,${jsx}.jsx)(${menu},{leftIconAsset:${asset},...${props},children:${label}},1),(0,${jsx}.jsx)(${menu},{onClick:__ANTICODEX_OPEN_MANAGER__,children:"\\u7ba1\\u7406"},"anticodex-manager")]}`;
+    if (replacement.length > componentMatch[0].length) {
+      throw new Error(`Profile dropdown Codex 26.1117 replacement grew: ${replacement.length} > ${componentMatch[0].length}`);
+    }
+    return text.slice(0, componentMatch.index) + replacement + " ".repeat(componentMatch[0].length - replacement.length) + text.slice(componentMatch.index + componentMatch[0].length);
+  }
 
   const webpack = /(?<cache>[\w$]+)\[\d+\]===Symbol\.for\("react\.memo_cache_sentinel"\)\?\((?<label>[\w$]+)=\(0,(?<jsx>[\w$]+)\.jsx\)\((?<message>[\w$.]+),\{id:"codex\.profileDropdown\.settingsPage",defaultMessage:"Settings",description:"Menu item to open Codex settings page"\}\),\k<cache>\[\d+\]=\k<label>\):\k<label>=\k<cache>\[\d+\],\k<cache>\[\d+\]!==(?<open>[\w$]+)\|\|\k<cache>\[\d+\]!==(?<shortcut>[\w$]+)\?\((?<item>[\w$]+)=\(0,\k<jsx>\.jsx\)\((?<component>[\w$.]+),\{leftIcon:(?<icon>[\w$]+),keyboardShortcut:\k<shortcut>,onClick:\k<open>,children:\k<label>\}\),\k<cache>\[\d+\]=\k<open>,\k<cache>\[\d+\]=\k<shortcut>,\k<cache>\[\d+\]=\k<item>\):\k<item>=\k<cache>\[\d+\]/g;
   if (webpack.test(text)) {

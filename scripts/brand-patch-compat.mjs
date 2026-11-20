@@ -1123,42 +1123,54 @@ export function patchModernNativeConfigBatchWrite(text) {
 
 export function patchCrashRecoveryTitle(text) {
   const source = String(text ?? "");
-  if (/id:[`"]appServerCrash\.recoveryTitle[`"],defaultMessage:[`"]Anti-Codex hit a snag[`"]/.test(source)) return source;
-  const pattern = /id:(?<quote>[`\"])appServerCrash\.recoveryTitle\k<quote>,defaultMessage:\k<quote>ChatGPT hit a snag\k<quote>,description:\k<quote>[^`"]+\k<quote>/;
+  if (/id:[`"]appServerCrash\.recoveryTitle[`"],defaultMessage:[`"]Anti-Codex (?:hit a snag|crashed)[`"]/.test(source)) return source;
+  const pattern = /id:(?<quote>[`\"])appServerCrash\.recoveryTitle\k<quote>,defaultMessage:\k<quote>ChatGPT hit a snag\k<quote>(?:,description:\k<quote>[^`"]+\k<quote>)?/;
   const match = pattern.exec(source);
   if (!match) throw new Error("Crash recovery title was not found");
-  const replacement = "id:`appServerCrash.recoveryTitle`,defaultMessage:`Anti-Codex hit a snag`";
+  const quote = match.groups.quote;
+  // Newer shells drop the description field, leaving no room for the longer brand name.
+  const title = match[0].includes(",description:") ? "Anti-Codex hit a snag" : "Anti-Codex crashed";
+  const replacement = `id:${quote}appServerCrash.recoveryTitle${quote},defaultMessage:${quote}${title}${quote}`;
   return source.slice(0, match.index) + padReplacement(match[0], replacement) + source.slice(match.index + match[0].length);
 }
 
 export function patchCrashRecoveryRuntime(text) {
   let source = String(text ?? "");
+  // Each entry: original pattern, preferred text, and a shorter text for newer shells that dropped
+  // the description field and so leave no room for the longer brand name.
   const replacements = [
     [
-      /id:(?<quote>[`\"])appServerCrash\.configurationRecoveryDescription\k<quote>,defaultMessage:\k<quote>ChatGPT couldn't load your configuration\. Review it, then restart to try again\.\k<quote>,description:\k<quote>[^`"]+\k<quote>/,
-      "id:`appServerCrash.configurationRecoveryDescription`,defaultMessage:`Anti-Codex couldn't load your configuration. Review it, then restart to try again.`",
+      /id:(?<quote>[`\"])appServerCrash\.configurationRecoveryDescription\k<quote>,defaultMessage:\k<quote>ChatGPT couldn't load your configuration\. Review it, then restart to try again\.\k<quote>(?:,description:\k<quote>[^`"]+\k<quote>)?/,
+      "appServerCrash.configurationRecoveryDescription",
+      ["Anti-Codex couldn't load your configuration. Review it, then restart to try again.", "Anti-Codex couldn't load your configuration. Review it, then restart to retry."],
     ],
     [
-      /id:(?<quote>[`\"])appServerCrash\.recoveryDescription\k<quote>,defaultMessage:\k<quote>Try again or update ChatGPT if this keeps happening\k<quote>,description:\k<quote>[^`"]+\k<quote>/,
-      "id:`appServerCrash.recoveryDescription`,defaultMessage:`Try again or update Anti-Codex if this keeps happening`",
+      /id:(?<quote>[`\"])appServerCrash\.recoveryDescription\k<quote>,defaultMessage:\k<quote>Try again or update ChatGPT if this keeps happening\k<quote>(?:,description:\k<quote>[^`"]+\k<quote>)?/,
+      "appServerCrash.recoveryDescription",
+      ["Try again or update Anti-Codex if this keeps happening", "Try again or update Anti-Codex if this persists"],
     ],
     [
-      /id:(?<quote>[`\"])appServerCrash\.restartChatGPT\k<quote>,defaultMessage:\k<quote>Restart ChatGPT\k<quote>,description:\k<quote>[^`"]+\k<quote>/,
-      "id:`appServerCrash.restartChatGPT`,defaultMessage:`Restart Anti-Codex`",
+      /id:(?<quote>[`\"])appServerCrash\.restartChatGPT\k<quote>,defaultMessage:\k<quote>Restart ChatGPT\k<quote>(?:,description:\k<quote>[^`"]+\k<quote>)?/,
+      "appServerCrash.restartChatGPT",
+      ["Restart Anti-Codex", "Restart"],
     ],
   ];
-  for (const [pattern, replacement] of replacements) {
-    if (source.includes(replacement)) continue;
+  for (const [pattern, id, messages] of replacements) {
+    if (messages.some((message) => new RegExp(`id:[\`"]${escapeRegExp(id)}[\`"],defaultMessage:[\`"]${escapeRegExp(message)}[\`"]`).test(source))) continue;
     const match = pattern.exec(source);
     if (!match) {
-      if (pattern.source.includes("restartChatGPT") && /id:[`"]appServerCrash\.restartChatGPT[`"],defaultMessage:[`"]Try again[`"]/.test(source)) continue;
+      if (id === "appServerCrash.restartChatGPT" && /id:[`"]appServerCrash\.restartChatGPT[`"],defaultMessage:[`"]Try again[`"]/.test(source)) continue;
       throw new Error(`Crash recovery runtime text was not found: ${pattern}`);
     }
-    source = source.slice(0, match.index) + padReplacement(match[0], replacement) + source.slice(match.index + match[0].length);
+    const quote = match.groups.quote;
+    const fitting = messages
+      .map((message) => `id:${quote}${id}${quote},defaultMessage:${quote}${message}${quote}`)
+      .find((replacement) => replacement.length <= match[0].length);
+    if (!fitting) throw new Error(`Crash recovery runtime text does not fit: ${id}`);
+    source = source.slice(0, match.index) + padReplacement(match[0], fitting) + source.slice(match.index + match[0].length);
   }
   return source;
 }
-
 function originalPrimaryWindowTracker(windowAlias) {
   return `trackPrimaryWindow(${windowAlias}){this.primaryWindows.add(${windowAlias}),${windowAlias}.isFocused()?(this.lastActivePrimaryWindow=${windowAlias},this.primaryWindowLastActiveAtMs.set(${windowAlias},Date.now())):this.lastActivePrimaryWindow??=${windowAlias},this.emitPrimaryWindowChangeIfNeeded(),${windowAlias}.on(\`focus\`,()=>{this.lastActivePrimaryWindow=${windowAlias},this.primaryWindowLastActiveAtMs.set(${windowAlias},Date.now()),this.emitPrimaryWindowChangeIfNeeded()}),${windowAlias}.on(\`blur\`,()=>{this.primaryWindowLastActiveAtMs.set(${windowAlias},Date.now())})}`;
 }

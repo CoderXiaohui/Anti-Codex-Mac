@@ -199,6 +199,23 @@ function enqueueBridgeCall(turn, call) {
   if (!call?.callId || turn.receivedCallIds.has(call.callId)) return;
   turn.receivedCallIds.add(call.callId);
   turn.queue.push({ type: "bridge_call", call });
+  startToolKeepAlive(turn);
+}
+
+// While Codex runs a tool (a long command, or waiting for the user's approval) the agent sends no
+// progress, so keep its turn alive until every pending tool result is returned.
+const TOOL_KEEP_ALIVE_MS = 30_000;
+function startToolKeepAlive(turn) {
+  if (turn.keepAliveTimer || typeof turn.session.keepAlive !== "function") return;
+  turn.keepAliveTimer = setInterval(() => {
+    if (turn.closed || turn.pendingCalls.size === 0 && turn.queue.peek()?.type !== "bridge_call") {
+      clearInterval(turn.keepAliveTimer);
+      turn.keepAliveTimer = null;
+      return;
+    }
+    turn.session.keepAlive();
+  }, TOOL_KEEP_ALIVE_MS);
+  turn.keepAliveTimer.unref?.();
 }
 
 function startPrompt(turn, content, requestSignal) {
@@ -573,6 +590,8 @@ function permissionOptionId(params, expectedSessionId, bridge) {
 async function closeTurn(turn) {
   if (!turn || turn.closed) return;
   turn.closed = true;
+  clearInterval(turn.keepAliveTimer);
+  turn.keepAliveTimer = null;
   turn.retained = false;
   turn.continuation.retained = false;
   turn.lifetime.abort(new Error("ACP turn closed."));

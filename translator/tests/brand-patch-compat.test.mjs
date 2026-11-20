@@ -1134,3 +1134,17 @@ test("preserves an empty notify array as an Anti-Codex legacy-notify opt-out", (
   });
   assert.equal(brandPatchCompat.patchComputerUseLegacyNotifyOptOut(patched), patched);
 });
+
+test("crash recovery text fits Codex 26.1117 bundles that dropped the description field", () => {
+  const title = 'title:e=(0,r.jsx)(s.A,{id:"appServerCrash.recoveryTitle",defaultMessage:"ChatGPT hit a snag"})';
+  const patchedTitle = brandPatchCompat.patchCrashRecoveryTitle(title);
+  assert.equal(patchedTitle.length, title.length);
+  assert.match(patchedTitle, /defaultMessage:"Anti-Codex crashed"/);
+  assert.equal(brandPatchCompat.patchCrashRecoveryTitle(patchedTitle), patchedTitle);
+  const runtime = 'C?(0,r.jsx)(m.A,{id:"appServerCrash.configurationRecoveryDescription",defaultMessage:"ChatGPT couldn\'t load your configuration. Review it, then restart to try again."}):(0,r.jsx)(m.A,{id:"appServerCrash.recoveryDescription",defaultMessage:"Try again or update ChatGPT if this keeps happening"}),o=(0,r.jsx)(m.A,{id:"appServerCrash.restartChatGPT",defaultMessage:"Try again"})';
+  const patchedRuntime = brandPatchCompat.patchCrashRecoveryRuntime(runtime);
+  assert.equal(patchedRuntime.length, runtime.length);
+  assert.doesNotMatch(patchedRuntime, /defaultMessage:"[^"]*ChatGPT/);
+  assert.match(patchedRuntime, /Anti-Codex couldn't load your configuration/);
+  assert.equal(brandPatchCompat.patchCrashRecoveryRuntime(patchedRuntime), patchedRuntime);
+});

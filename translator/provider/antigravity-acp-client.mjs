@@ -182,6 +182,7 @@ export function createAntigravityAcpClient(options = {}) {
         const session = {
           sessionId,
           prompt: (promptOptions = {}) => transport.prompt(sessionId, promptOptions),
+          keepAlive: () => transport.keepAlive(),
           close: () => {
             if (!closePromise) {
               closePromise = transport.closeSession({
@@ -288,7 +289,7 @@ function createJsonRpcTransport(child, options) {
       timer: null,
     };
     const timeoutMs = positiveTimeout(requestOptions.timeoutMs, options.requestTimeoutMs);
-    entry.timer = setTimeout(() => {
+    const onTimer = () => {
       if (pending.get(id) !== entry) return;
       pending.delete(id);
       const error = new Error(`Antigravity ACP ${method} timed out after ${timeoutMs}ms.`);
@@ -298,7 +299,15 @@ function createJsonRpcTransport(child, options) {
         entry.settled = true;
         reject(error);
       }
-    }, timeoutMs);
+    };
+    entry.timer = setTimeout(onTimer, timeoutMs);
+    // A prompt can legitimately run for a long time (several tool calls, approvals), so callers
+    // can restart the timer whenever the agent shows progress.
+    requestOptions.onStart?.(() => {
+      if (pending.get(id) !== entry) return;
+      clearTimeout(entry.timer);
+      entry.timer = setTimeout(onTimer, timeoutMs);
+    });
     pending.set(id, entry);
     try {
       write({ jsonrpc: "2.0", id, method, params });
@@ -449,6 +458,8 @@ function createJsonRpcTransport(child, options) {
     if (!update || typeof update !== "object") return;
     const state = activePrompt?.sessionId === params.sessionId ? activePrompt : null;
     if (!state) return;
+    // Any progress from the agent proves the turn is alive; restart its idle timer.
+    state.touch?.();
     if (update.sessionUpdate === "agent_message_chunk" && update.content?.type === "text") {
       deliverCallback(state, state.onText, update.content.text, update);
     } else if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
@@ -612,6 +623,7 @@ function createJsonRpcTransport(child, options) {
       prompt: content,
     }, {
       timeoutMs: options.promptTimeoutMs,
+      onStart: (touch) => { state.touch = touch; },
       onResponse: () => finishPrompt(state),
       onFailure: () => finishPrompt(state),
       onTimeout: (error) => {
@@ -643,6 +655,7 @@ function createJsonRpcTransport(child, options) {
   return {
     request,
     prompt,
+    keepAlive: () => { if (activePrompt && !activePrompt.done) activePrompt.touch?.(); },
     notify,
     setSessionId,
     setAgentCapabilities,

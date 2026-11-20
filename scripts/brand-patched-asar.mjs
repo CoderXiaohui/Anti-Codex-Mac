@@ -756,10 +756,12 @@ function findAppServerManagedSessionFlagsPatch(fd, header, dataOffset) {
       candidates.push([rel, patchCurrentAppServerManagedSessionFlags]);
     } catch {}
   }
-  if (candidates.length !== 1) {
-    throw new Error(`Expected exactly one native app-server spawn bundle, found ${candidates.length}`);
+  // Newer shells ship the app-server transport in both the main host bundle and an early bootstrap
+  // chunk; either may launch the CLI, so every copy needs the same managed-session flags.
+  if (candidates.length === 0 || candidates.length > 2) {
+    throw new Error(`Expected one or two native app-server spawn bundles, found ${candidates.length}`);
   }
-  return candidates[0];
+  return candidates;
 }
 
 function findDefaultLocalePatch(fd, header, dataOffset) {
@@ -976,7 +978,7 @@ function findCrashRecoveryPagePatch(fd, header, dataOffset) {
     if (!rel.startsWith("webview/assets/") || !rel.endsWith(".js")) continue;
     const { buf } = readFileFromAsar(fd, entry, dataOffset);
     const text = buf.toString("utf8");
-    if (/id:[`"]appServerCrash\.recoveryTitle[`"],defaultMessage:[`"](?:ChatGPT|Anti-Codex) hit a snag[`"]/.test(text)) {
+    if (/id:[`"]appServerCrash\.recoveryTitle[`"],defaultMessage:[`"](?:ChatGPT hit a snag|Anti-Codex hit a snag|Anti-Codex crashed)[`"]/.test(text)) {
       titleTarget = [rel, patchCrashRecoveryTitle];
     }
     if (/id:[`"]appServerCrash\.configurationRecoveryDescription[`"]/.test(text) &&
