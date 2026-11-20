@@ -544,7 +544,9 @@ function prepareChatRequest(body, sessions, nativeCustomInstructions, conversati
         userItems: userContent.items,
         structuredOutput,
       });
-      if (matched) {
+      if (matched && matched.entry.continuation?.turn?.session?.alive === false) {
+        staleContinuation = matched.entry.continuation;
+      } else if (matched) {
         return {
           kind: "follow_up",
           reason: "history_matched",
@@ -560,7 +562,13 @@ function prepareChatRequest(body, sessions, nativeCustomInstructions, conversati
         };
       }
     } else {
-      const existingConversation = sessions.takeConversation(effectiveConversationKey);
+      let existingConversation = sessions.takeConversation(effectiveConversationKey);
+      // A saved session whose provider process has exited cannot continue. Start a fresh session with
+      // the full chat history instead of failing the user's next message.
+      if (existingConversation && existingConversation.continuation?.turn?.session?.alive === false) {
+        staleContinuation = existingConversation.continuation;
+        existingConversation = null;
+      }
       if (existingConversation) {
         const followUpItems = matchFollowUpConversation(existingConversation, {
           tools,

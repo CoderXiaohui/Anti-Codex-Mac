@@ -183,6 +183,7 @@ export function createAntigravityAcpClient(options = {}) {
           sessionId,
           prompt: (promptOptions = {}) => transport.prompt(sessionId, promptOptions),
           keepAlive: () => transport.keepAlive(),
+          get alive() { return !transport.closed; },
           close: () => {
             if (!closePromise) {
               closePromise = transport.closeSession({

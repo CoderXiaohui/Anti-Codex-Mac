@@ -432,3 +432,36 @@ test("a model the signed-in account cannot use is a clear 400 instead of a gatew
     await turns.close();
   }
 });
+
+test("a follow-up after the provider process exited starts a new session with the chat history", async () => {
+  const opened = [];
+  const client = {
+    async open() {
+      const session = {
+        sessionId: "acp-dead-" + (opened.length + 1),
+        alive: true,
+        async prompt({ onText, text }) { onText(session.sessionId + ":" + JSON.stringify(text).includes("first answer")); return { stopReason: "end_turn" }; },
+        async close() {},
+      };
+      opened.push(session);
+      return session;
+    },
+  };
+  const turns = createAntigravityAcpTurns({ client, workspace: process.cwd() });
+  const adapter = createAntigravityChatAdapter({ client: turns });
+  try {
+    const first = await adapter.complete({ model: "gemini-4-argon-high", messages: [{ role: "user", content: "Hi." }] }, { conversationKey: "dead-process" });
+    assert.match(first.choices[0].message.content, /^acp-dead-1:/);
+    opened[0].alive = false;
+    const second = await adapter.complete({ model: "gemini-4-argon-high", messages: [
+      { role: "user", content: "Hi." },
+      { role: "assistant", content: "first answer" },
+      { role: "user", content: "Again." },
+    ] }, { conversationKey: "dead-process" });
+    assert.equal(opened.length, 2);
+    assert.equal(second.choices[0].message.content, "acp-dead-2:true");
+  } finally {
+    await adapter.close();
+    await turns.close();
+  }
+});
