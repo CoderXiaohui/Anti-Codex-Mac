@@ -1,0 +1,3 @@
+#!/bin/sh
+# Block pushes that would upload account data or credentials.
+exec node "$(git rev-parse --show-toplevel)/scripts/git-hooks/check-push-secrets.mjs" "$@"

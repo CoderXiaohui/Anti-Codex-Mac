@@ -1,0 +1,2 @@
+# The pre-push hook is a shell script; Windows line endings would break it.
+scripts/git-hooks/pre-push text eol=lf
