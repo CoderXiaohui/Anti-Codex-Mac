@@ -81,6 +81,16 @@ test("conversation cleanup clears nested thread references after moving rollout 
   assert.match(source, /pinned-thread-ids/);
 });
 
+test("conversation cleanup also clears the chat lists newer Codex hosts read", () => {
+  for (const name of ["session_index.jsonl", "thread_history_1.sqlite", "sqlite\\codex.db"]) {
+    assert.ok(source.includes(`"${name}"`), `cleanup must back up ${name}`);
+  }
+});
+
+test("conversation cleanup reopens Anti-Codex through its launch task", () => {
+  assert.match(source, /Start-ScheduledTask -TaskName "Anti-Codex Launcher"/);
+  assert.doesNotMatch(source, /start-anticodex\.ps1"[\s\S]{0,400}-InlineSupervisor/);
+});
 test("candidate ownership is strict and script hosts require an explicit canonical script path", () => {
   const candidates = functionSource("Get-AntiCodexProcesses");
   const ownership = functionSource("Get-AntiCodexProcessOwnership");

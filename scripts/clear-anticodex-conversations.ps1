@@ -659,6 +659,10 @@ function Stop-AntiCodexVerifiedProcess {
             $processHandle = [AntiCodex.Native.VerifiedProcessHandle]::Open($processId)
         } catch [ComponentModel.Win32Exception] {
             if ($_.Exception.NativeErrorCode -in @(87, 1168)) { return $true }
+            # Child processes exit on their own once the main window closes. A process caught halfway
+            # through exiting can no longer report its executable; treat it as stopped when it is gone.
+            Start-Sleep -Milliseconds 500
+            if (-not (Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue)) { return $true }
             throw
         }
         $liveExecutablePath = Normalize-Path ([string]$processHandle.ExecutablePath)
@@ -862,6 +866,11 @@ Move-IfExists -Path (Join-Path $stateRootFull "sqlite\codex-dev.db-shm") -Destin
 Move-IfExists -Path (Join-Path $codexHomeFull "sqlite\codex-dev.db") -DestinationRoot $backupDir -StateRootFull $stateRootFull -Moved $moved
 Move-IfExists -Path (Join-Path $codexHomeFull "sqlite\codex-dev.db-wal") -DestinationRoot $backupDir -StateRootFull $stateRootFull -Moved $moved
 Move-IfExists -Path (Join-Path $codexHomeFull "sqlite\codex-dev.db-shm") -DestinationRoot $backupDir -StateRootFull $stateRootFull -Moved $moved
+# Newer Codex hosts also list chats from a thread catalog, a rendered history cache and a session index.
+# Back them up with the sessions so cleared chats do not stay in the sidebar.
+foreach ($name in @("session_index.jsonl", "thread_history_1.sqlite", "thread_history_1.sqlite-wal", "thread_history_1.sqlite-shm", "sqlite\codex.db", "sqlite\codex.db-wal", "sqlite\codex.db-shm")) {
+    Move-IfExists -Path (Join-Path $codexHomeFull $name) -DestinationRoot $backupDir -StateRootFull $stateRootFull -Moved $moved
+}
 Move-IfExists -Path (Join-Path $stateRootFull "translator-lifecycle.json") -DestinationRoot $backupDir -StateRootFull $stateRootFull -Moved $moved
 Move-IfExists -Path (Join-Path $stateRootFull "translator-lifecycle.jsonl") -DestinationRoot $backupDir -StateRootFull $stateRootFull -Moved $moved
 
@@ -954,23 +963,14 @@ if ($antiCodexWasRunning -and -not $WhatIfOnly -and -not $SkipRestart) {
         if (-not (Test-Path -LiteralPath $installedLauncher -PathType Leaf)) {
             throw "installed Anti-Codex launcher missing: $installedLauncher"
         }
-        $powershellExe = Join-Path $PSHOME "powershell.exe"
-        $launcherArgs = @(
-            "-NoProfile",
-            "-ExecutionPolicy", "Bypass",
-            "-File", ('"{0}"' -f $installedLauncher),
-            "-SkipUpdateCheck",
-            "-InlineSupervisor"
-        )
-        $launcherProcess = Start-Process -FilePath $powershellExe -ArgumentList $launcherArgs -WindowStyle Hidden -PassThru
-        $restartLauncherProcessId = [int]$launcherProcess.Id
+        # The launcher refuses to start from a process that belongs to another app (for example a Codex
+        # terminal), so reopen Anti-Codex through its own launch task, the same way the desktop shortcut does.
+        Start-ScheduledTask -TaskName "Anti-Codex Launcher"
         $restartSucceeded = Wait-Until -TimeoutSeconds $RestartTimeoutSec -Predicate {
             @(Get-AntiCodexMainProcesses).Count -gt 0
         }
         if (-not $restartSucceeded) {
-            $launcherProcess.Refresh()
-            $launcherStatus = if ($launcherProcess.HasExited) { "launcher exit code $($launcherProcess.ExitCode)" } else { "launcher still running" }
-            throw "Anti-Codex main process did not return within $RestartTimeoutSec seconds ($launcherStatus)"
+            throw "Anti-Codex main process did not return within $RestartTimeoutSec seconds after starting the Anti-Codex Launcher task"
         }
         $restartedProcessIds = @(Get-AntiCodexMainProcesses | ForEach-Object { [int]$_.ProcessId })
     } catch {
