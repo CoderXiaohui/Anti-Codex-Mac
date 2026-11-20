@@ -70,9 +70,11 @@ const forbiddenImport = /from\s+["']\.\.\/(?:adaptive-server|server|antigravity-
 const forbiddenSemantics = /internalDeterministicTasks|runInternalToolLoop|synthesizeDeterministicTask|buildVerificationRecoveryMessages/;
 const sources = providerPaths.map((path) => {
   const content = readFileSync(resolve(root, path), "utf8");
+  // Count bytes with LF line endings so the size limit does not depend on the checkout's line-ending setting.
+  const lfContent = content.replace(/\r\n/g, "\n");
   return {
     path,
-    bytes: Buffer.byteLength(content),
+    bytes: Buffer.byteLength(lfContent),
     sha256: createHash("sha256").update(content).digest("hex"),
     forbiddenImport: forbiddenImport.test(content),
     forbiddenSemantics: forbiddenSemantics.test(content),
