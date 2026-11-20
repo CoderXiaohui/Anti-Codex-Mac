@@ -242,7 +242,7 @@ test("every production relaunch keeps the fixed-route supervisor attached", () =
   const managerGatewayStart = manager.match(/\$launcher = Join-Path \$scriptRoot "start-anticodex\.ps1"[\s\S]*?return Wait-ManagerHealth/)?.[0] ?? "";
   assert.match(managerGatewayStart, /-InlineSupervisor/);
   assert.match(modelRefresh, /-File[^\r\n]*\$startAntiCodex[^\r\n]*-InlineSupervisor/);
-  assert.match(conversationCleanup, /"-SkipUpdateCheck"[\s\S]*?"-InlineSupervisor"/);
+  assert.match(conversationCleanup, /Start-ScheduledTask -TaskName "Anti-Codex Launcher"/);
   assert.doesNotMatch(rollback, /Start-Process[^\r\n]*\$startAntiCodex[^\r\n]*-InlineSupervisor/);
 });
 
