@@ -79,7 +79,7 @@
 | **单元测试与总检** | 全绿 | `node --test --test-concurrency=2 translator/tests/` 1343/1343，`installed-overall-fast` (`ok: true`, 0 failures) |
 | **26.1117 壳补丁适配** | 已修 | app-server 会话参数改为同时补 1~2 个 bundle（新版在 `app-server-host.js` 与 `early-bootstrap-824-*.js` 各有一份）；“管理”入口适配新的独立设置组件；崩溃恢复文案描述字段改为可选并提供短文案；候选校验器同步认新标题 |
 | **官方通道工具稳定性** | 已修 | 有任何进度即重置空闲计时；工具执行/等待审批期间每 30 秒保活；高档位模型首包前可静默思考最长 15 分钟（客户端流空闲上限同步为 1050 秒）；CLI 进程退出后下一条消息自动开新会话并带上聊天记录，不再报错 |
-| **本轮审计修复（2026-11-20）** | 已修 | ① provider 边界体积检查改按 LF 计字节，CRLF 检出不再误报超限；② `antigravity-cascade-client` 测试原先会把假提示词（60000 个 D）写进用户真实 `prompt-snapshot.json`，现改写到临时目录（被污染的文件已移到 `conversation-backups\prompt-snapshot-test-pollution-20261120`，下次真实请求自动重建）；③ 官方 CLI 每轮都报 `missing project file default-cli-project.json`，现在建会话时预置该文件，错误行 6→0 |
+| **本轮审计修复（2026-11-20）** | 已修 | ① provider 边界体积检查改按 LF 计字节，CRLF 检出不再误报超限；② `antigravity-cascade-client` 测试原先会把假提示词（60000 个 D）写进用户真实 `prompt-snapshot.json`，现改写到临时目录（被污染的文件已移到 `conversation-backups\prompt-snapshot-test-pollution-20261120`；设置页该层暂显示「尚未捕获」，下次走桌面通道的请求会重新记录，官方通道不写此文件）；③ 官方 CLI 每轮都报 `missing project file default-cli-project.json`，现在建会话时预置该文件，错误行 6→0 |
 | **实窗工具验收** | 通过 | 安装后的真实窗口：Claude Opus 5.5 High、Gemini 4 Argon High、Neon Medium、Hydrogen High 各 3 轮（第 3 轮真实执行命令、读文件、apply_patch 改文件），工具全部 exit 0，无错误事件，单一聊天；重装后 Hydrogen High 复测 `{"ok":true,"turns":3,"chatThreads":1}` |
 | **安全面** | 低风险 | 所有服务只监听 127.0.0.1；适配器需要 Bearer；管理服务有来源校验且 GET 不返回密钥；官方 CLI 只允许 `mcp_anticodex_*` 工具并且只批准本会话注册过的工具；仓库内无密钥、无个人邮箱 |
 | **已知无害噪声** | 设计如此 | 请求日志里的 `missing_title_provider` 400（自动标题保持本地，不消耗额度）；官方 CLI 启动时短暂的 “not logged into Antigravity”（随后用钥匙串登录成功） |
