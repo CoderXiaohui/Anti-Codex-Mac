@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,6 +12,12 @@ import {
 import { createAntigravityChatAdapter } from "../provider/antigravity-chat-adapter.mjs";
 import * as cascadeClientModule from "../provider/antigravity-cascade-client.mjs";
 import { nativeTurnError, renderBoundedSystemPromptSections } from "../antigravity-contract.mjs";
+
+// Every turn records the prompt it sent. Keep those records in a throwaway folder so the tests never
+// overwrite the prompt snapshot the user sees in the real Anti-Codex data folder.
+const promptStateRoot = mkdtempSync(join(tmpdir(), "antigravity-cascade-client-state-"));
+process.env.DEEPCODEX_STATE_ROOT = promptStateRoot;
+test.after(() => rmSync(promptStateRoot, { recursive: true, force: true }));
 
 test("extracts only loopback listening ports owned by the Antigravity process", () => {
   const netstat = [
