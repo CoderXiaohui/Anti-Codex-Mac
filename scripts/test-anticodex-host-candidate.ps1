@@ -118,8 +118,10 @@ function Test-AntiCodexCrashRecoveryPage {
     $v2DescriptionPatched = 'id:`appServerCrash\.recoveryDescription`,defaultMessage:`Something went wrong\. Restart Anti-Codex to try again\.`(?=\})'
     $v2RestartPatched = 'id:`appServerCrash\.restartChatGPT`,defaultMessage:`Restart Anti-Codex`(?=\})'
     $v3MarkerPattern = "/\*anticodex-crash-recovery-actions-v3\*/children:\[(?<restart>$identifier),(?<feedback>$identifier),(?<config>$identifier)\]"
-    $modernTitleOriginal = 'id:[`"]appServerCrash\.recoveryTitle[`"],defaultMessage:[`"]ChatGPT hit a snag[`"],description:[`"][^`"]+[`"]'
-    $modernTitlePatched = 'id:`appServerCrash\.recoveryTitle`,defaultMessage:`Anti-Codex hit a snag`'
+    $modernTitleOriginal = 'id:[`"]appServerCrash\.recoveryTitle[`"],defaultMessage:[`"]ChatGPT hit a snag[`"](?:,description:[`"][^`"]+[`"])?'
+    # Codex 26.1117 quotes messages with double quotes and drops the description, so the title uses
+    # the shorter wording that fits the original length.
+    $modernTitlePatched = 'id:([`"])appServerCrash\.recoveryTitle\1,defaultMessage:\1Anti-Codex (?:hit a snag|crashed)\1'
     if ([regex]::Matches($Text, $modernTitlePatched).Count -eq 1 -and
         [regex]::Matches($Text, $modernTitleOriginal).Count -eq 0 -and
         [regex]::Matches($Text, 'id:[`"]appServerCrash\.feedbackGuidance[`"]').Count -eq 1) {
