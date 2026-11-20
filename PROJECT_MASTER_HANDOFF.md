@@ -67,22 +67,23 @@
 
 ---
 
-## 三、当前项目进度与运行态基线（2026-11-19）
+## 三、当前项目进度与运行态基线（2026-11-20）
 
 | 维度 | 当前状态 | 详细数据 / 证据 |
 |---|---|---|
-| **官方源版本** | `26.1111.9664.0` | `C:\Program Files\WindowsApps\OpenAI.Codex_26.1111.9664.0_x64__2p2nqsd0c76g0\app`（内置 codex-cli 0.169.1） |
-| **活动 Anti-Codex 宿主** | `26.1111.9664.0`（rev 7） | `%LOCALAPPDATA%\Anti-Codex\codex-patched-app`，更新检查 `up_to_date`，品牌、图标与宿主校验均通过 |
-| **回滚点宿主** | `26.1111.2228.0`（rev 7） | `%LOCALAPPDATA%\Anti-Codex\rollback-host`，随时可一键回滚 |
+| **官方源版本** | `26.1117.3838.0` | `C:\Program Files\WindowsApps\OpenAI.Codex_26.1117.3838.0_x64__2p2nqsd0c76g0\app`（内置 codex-cli 0.171.0-alpha.13） |
+| **活动 Anti-Codex 宿主** | `26.1117.3838.0`（rev 7） | `%LOCALAPPDATA%\Anti-Codex\codex-patched-app`，更新检查 `up_to_date`、`drift=synced`，品牌、图标与宿主校验均通过 |
+| **回滚点宿主** | `26.1111.9664.0`（rev 7） | `%LOCALAPPDATA%\Anti-Codex\rollback-host`，随时可一键回滚 |
 | **CodexPlusPlus 组件** | `2.6.7` | `%LOCALAPPDATA%\Anti-Codex\components\codexplusplus\codex-plus-plus.exe`（SHA256: `44f16e16...`） |
-| **Fixed Route 状态** | `ready` | 默认走官方 Antigravity 通道（health `upstream=antigravity-official`），目录 79 个模型，6/6 共享 MCP 就绪 |
-| **单元测试与总检** | 全绿 | `node --test --test-concurrency=2 translator/tests/` 1334/1334，`installed-overall-fast` (`ok: true`) |
-| **2026-11-19 同步修复** | 已修 | 更新后验收原先只认 `antigravity-desktop`，选中官方 Antigravity 模型时会误判超时并自动回滚；现两种 Antigravity 通道都认可 |
-| **429 根治（2026-11-19）** | 已修 | 旧桌面转发在 Antigravity 2.33 上连简单请求都返回 503/超时，带完整 Codex 说明时报 429。现在凡是官方 CLI 能用的模型（含 Neon、Claude Opus/Sonnet 5.5）一律走官方通道；桌面已下架的 Claude 4.6 自动从列表移除 |
-| **官方通道兼容修复** | 已修 | Claude 拒收带点号的工具名，已改为合规别名；官方 CLI 以“⚠”文字回传的 429/503/封号错误改为真正的错误码，不再写进聊天；账号无权用的模型返回清晰的 400 |
-| **账号切换** | 已修并实测 | 切换前先结束官方会话（否则切换被拒），之后新消息在新账号上开新会话并带上聊天记录。a0→xu→a0 往返实测：同一聊天三轮都答对，登录身份逐次匹配 |
-| **实窗验收** | 通过 | 安装后的真实窗口：Claude Opus 5.5、Claude Sonnet 5.5、Gemini 4 Neon、Argon、Carbon 各 3 轮（含真实读文件），全部正确，单一聊天，无 429/502/503 |
-| **仍需注意** | 外部因素 | dd*** 账号被 Google 以违反服务条款停用；xu*** 是免费账号，只能用 3.8 Flash 和旧模型；本地第三方接口 localhost:8082 当前未运行 |
+| **Runtime** | 已同步 `6d943207` | 133 个文件校验通过，`state=validated`，Fixed Route `ready`，默认模型 `Antigravity 官方 · Gemini 4 Hydrogen (High)` |
+| **单元测试与总检** | 全绿 | `node --test --test-concurrency=2 translator/tests/` 1343/1343，`installed-overall-fast` (`ok: true`, 0 failures) |
+| **26.1117 壳补丁适配** | 已修 | app-server 会话参数改为同时补 1~2 个 bundle（新版在 `app-server-host.js` 与 `early-bootstrap-824-*.js` 各有一份）；“管理”入口适配新的独立设置组件；崩溃恢复文案描述字段改为可选并提供短文案；候选校验器同步认新标题 |
+| **官方通道工具稳定性** | 已修 | 有任何进度即重置空闲计时；工具执行/等待审批期间每 30 秒保活；高档位模型首包前可静默思考最长 15 分钟（客户端流空闲上限同步为 1050 秒）；CLI 进程退出后下一条消息自动开新会话并带上聊天记录，不再报错 |
+| **本轮审计修复（2026-11-20）** | 已修 | ① provider 边界体积检查改按 LF 计字节，CRLF 检出不再误报超限；② `antigravity-cascade-client` 测试原先会把假提示词（60000 个 D）写进用户真实 `prompt-snapshot.json`，现改写到临时目录（被污染的文件已移到 `conversation-backups\prompt-snapshot-test-pollution-20261120`，下次真实请求自动重建）；③ 官方 CLI 每轮都报 `missing project file default-cli-project.json`，现在建会话时预置该文件，错误行 6→0 |
+| **实窗工具验收** | 通过 | 安装后的真实窗口：Claude Opus 5.5 High、Gemini 4 Argon High、Neon Medium、Hydrogen High 各 3 轮（第 3 轮真实执行命令、读文件、apply_patch 改文件），工具全部 exit 0，无错误事件，单一聊天；重装后 Hydrogen High 复测 `{"ok":true,"turns":3,"chatThreads":1}` |
+| **安全面** | 低风险 | 所有服务只监听 127.0.0.1；适配器需要 Bearer；管理服务有来源校验且 GET 不返回密钥；官方 CLI 只允许 `mcp_anticodex_*` 工具并且只批准本会话注册过的工具；仓库内无密钥、无个人邮箱 |
+| **已知无害噪声** | 设计如此 | 请求日志里的 `missing_title_provider` 400（自动标题保持本地，不消耗额度）；官方 CLI 启动时短暂的 “not logged into Antigravity”（随后用钥匙串登录成功） |
+| **仍需注意** | 外部因素 | Argon/Neon 上游偶尔很慢（单轮可达 11~13 分钟）但能完成；当前账号 a0*** 的 Claude/GPT 周额度约剩 5%，Gemini 约剩 81%；本地第三方接口 localhost:8082 是用户自己的外部服务，当前未运行；后台记忆任务使用默认模型 |
 | **1.0 完成度清单** | 12 / 13 已勾选 | 详见 `COMPLETION_CHECKLIST.md`（第 1–12 项已完成验收；仅剩第 13 项“长任务端到端”待在需要消耗真实额度时勾选） |
 
 ---
@@ -92,12 +93,21 @@
 ### 4.1 仓库与分支信息
 - **GitHub 远端地址（origin）**：`https://github.com/saerda8/Anti-Codex.git`
 - **当前分支**：`main`
-- **当前本地领先远端（未 push 提交）**：领先 `origin/main`（`5ce1379f`）共 9~10 个本地提交（可根据需要随时 `git push origin main`）。
+- **同步状态**：本地 `main` 与 `origin/main` 同步（每轮验收通过后 `git push origin main`）。
 
 ### 4.2 最近关键提交记录（倒序）
 | Commit Hash | 提交说明 | 涉及核心文件 |
 |---|---|---|
-| `HEAD`（当前最新） | `docs: add master project handoff and path migration guide` | `PROJECT_MASTER_HANDOFF.md`, `HANDOFF.md` |
+| `HEAD`（当前最新） | `docs: record Codex 26.1117 sync, tool keep-alive fixes and audit results` | `PROJECT_MASTER_HANDOFF.md` |
+| `6d943207` | Seed the official CLI default project file so every turn stops logging missing-project errors | `translator/provider/antigravity-official-route.mjs` |
+| `94c65775` | Keep cascade client test prompt snapshots out of the real Anti-Codex data folder | `translator/tests/antigravity-cascade-client.test.mjs` |
+| `52ff5796` | Measure provider boundary size with LF line endings so CRLF checkouts do not fail the limit | `scripts/test-antigravity-chat-adapter-contract.mjs` |
+| `031f07dc` | Let high-effort official turns think silently for up to 15 minutes | `translator/provider/antigravity-acp-client.mjs`, `scripts/lib/anticodex-fixed-route.mjs` |
+| `1d2a329e` | Restart official sessions whose CLI process exited instead of failing the next message | `translator/provider/antigravity-chat-adapter.mjs` |
+| `ac1d53dc` | Validate Codex 26.1117 crash recovery title in host candidates | `scripts/test-anticodex-host-candidate.ps1` |
+| `0a9a7cfc` | Support Codex 26.1117 shell patches and keep long official tool turns alive | `scripts/brand-*.mjs`, `translator/provider/antigravity-acp-*.mjs` |
+| `8fe4dd6e` | docs: record official-route 429 fix and account switch verification | `PROJECT_MASTER_HANDOFF.md` |
+| `docs: add master project handoff and path migration guide` | 早期总交接文档 | `PROJECT_MASTER_HANDOFF.md`, `HANDOFF.md` |
 | `2e421ee7` | `fix: patch compiler auth state in Codex 26.1103` | `scripts/brand-patch-compat.mjs`, `scripts/brand-patched-asar.mjs`, `translator/tests/brand-patch-compat.test.mjs` |
 | `914c1053` | `fix: clear nested stale thread state` | `scripts/clear-anticodex-conversations.ps1`, `translator/tests/anticodex-prompt-policy.test.mjs`, `translator/tests/clear-anticodex-process-safety.test.mjs` |
 | `f001884c` | `fix: accept current settings validation shape` | `scripts/rollback-anticodex.ps1`, `scripts/test-anticodex-host-candidate.ps1` |
