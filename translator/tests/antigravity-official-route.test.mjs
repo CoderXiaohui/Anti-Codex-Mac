@@ -66,6 +66,7 @@ test("ACP access uses an isolated profile and only forwards editor-owned tools",
     assert.ok(rules.permissions.deny.includes("write_file(*)"));
     assert.ok(readFileSync(join(openArgs.geminiDir,"config","hooks.json"),"utf8").includes("PreToolUse"));
     assert.ok(readFileSync(join(openArgs.geminiDir,"config","editor-tool-policy.mjs"),"utf8").includes("bridgeToolDecision"));
+    assert.equal(JSON.parse(readFileSync(join(openArgs.geminiDir,"config","projects","default-cli-project.json"),"utf8")).id,"default-cli-project");
     assert.match(openArgs.systemInstructions,/Keep the user's permissions/);
     assert.equal(openArgs.model,"gemini-4-argon-high");
     await assert.rejects(route.complete({model:"anticodex/official/unlisted",messages:[]}), /模型|model/i);

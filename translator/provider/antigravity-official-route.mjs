@@ -66,6 +66,13 @@ function prepareProfile(temp) {
     mkdirSync(workspace);
     mkdirSync(join(geminiDir, "config"), { recursive: true });
     mkdirSync(join(geminiDir, "antigravity-cli"));
+    // The CLI looks up its default project on every turn and logs an error when the file is missing.
+    mkdirSync(join(geminiDir, "config", "projects"));
+    writeFileSync(join(geminiDir, "config", "projects", "default-cli-project.json"), JSON.stringify({
+      id: "default-cli-project",
+      name: "CLI Project",
+      projectResources: {},
+    }));
     const hookName = "editor-tool-policy.mjs";
     // ACP resolves a relative hook command from the directory containing hooks.json.
     copyFileSync(fileURLToPath(new URL("./antigravity-acp-tool-policy.mjs", import.meta.url)), join(geminiDir, "config", hookName));
