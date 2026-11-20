@@ -7,7 +7,9 @@ import { validateBridgeUrl } from "./antigravity-acp-mcp-stdio.mjs";
 
 const DEFAULT_OPEN_TIMEOUT_MS = 30_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
-const DEFAULT_PROMPT_TIMEOUT_MS = 300_000;
+// High-effort models can think silently for several minutes before their first visible output;
+// the turn is only abandoned after this long with no progress at all.
+const DEFAULT_PROMPT_TIMEOUT_MS = 15 * 60_000;
 const DEFAULT_PERMISSION_TIMEOUT_MS = 30_000;
 const DEFAULT_CLOSE_TIMEOUT_MS = 1_000;
 const DEFAULT_CANCEL_GRACE_MS = 5_000;
