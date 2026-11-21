@@ -395,6 +395,9 @@ test("candidate and rollback validators require both preserved Settings messages
 test("candidate and rollback recognize webpack recovery messages without accepting duplicate titles", () => {
   const fixture = mkdtempSync(join(tmpdir(), "anticodex-webpack-recovery-"));
   const valid = 'id:`appServerCrash.recoveryTitle`,defaultMessage:`Anti-Codex hit a snag`};id:"appServerCrash.feedbackGuidance",defaultMessage:"Send feedback to help us make the app better.",description:"Feedback guidance on the recovery page"}';
+  // Codex 26.1117: double-quoted messages, no descriptions, and the shorter title that fits the original length.
+  const modern = 'id:"appServerCrash.recoveryTitle",defaultMessage:"Anti-Codex crashed"});id:"appServerCrash.feedbackGuidance",defaultMessage:"Send feedback to help us make the app better."})';
+  const modernUnpatched = 'id:"appServerCrash.recoveryTitle",defaultMessage:"ChatGPT hit a snag"});id:"appServerCrash.feedbackGuidance",defaultMessage:"Send feedback to help us make the app better."})';
   try {
     const harness = join(fixture, "recovery.ps1");
     writeFileSync(harness, `$ErrorActionPreference = "Stop"
@@ -406,11 +409,14 @@ function Accept-Candidate([string]$Text) { try { return Test-AntiCodexCrashRecov
  rollback = Test-AntiCodexModernCrashRecovery ${quotePowerShell(valid)}
  candidateDuplicate = Accept-Candidate ${quotePowerShell(valid + valid)}
  rollbackDuplicate = Test-AntiCodexModernCrashRecovery ${quotePowerShell(valid + valid)}
+ candidateModern = Accept-Candidate ${quotePowerShell(modern)}
+ rollbackModern = Test-AntiCodexModernCrashRecovery ${quotePowerShell(modern)}
+ rollbackModernUnpatched = Test-AntiCodexModernCrashRecovery ${quotePowerShell(modernUnpatched)}
 } | ConvertTo-Json -Compress
 `, "utf8");
     const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", harness], {cwd: root, encoding: "utf8", windowsHide: true, timeout: 15_000});
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.deepEqual(JSON.parse(result.stdout.trim()), {candidate: true, rollback: true, candidateDuplicate: false, rollbackDuplicate: false});
+    assert.deepEqual(JSON.parse(result.stdout.trim()), {candidate: true, rollback: true, candidateDuplicate: false, rollbackDuplicate: false, candidateModern: true, rollbackModern: true, rollbackModernUnpatched: false});
   } finally { rmSync(fixture, {recursive: true, force: true}); }
 });
 

@@ -393,8 +393,10 @@ function Test-AntiCodexCrashRecoveryV3 {
 function Test-AntiCodexModernCrashRecovery {
     param([Parameter(Mandatory = $true)][string]$Text)
 
-    return [regex]::Matches($Text, 'id:`appServerCrash\.recoveryTitle`,defaultMessage:`Anti-Codex hit a snag`(?=\s*\})').Count -eq 1 -and
-        [regex]::Matches($Text, 'id:[`"]appServerCrash\.feedbackGuidance[`"],defaultMessage:[`"]Send feedback to help us make the app better\.[`"],description:[`"][^`"]+[`"]').Count -eq 1 -and
+    # Codex 26.1117 quotes messages with double quotes and drops the description, so its title uses the
+    # shorter wording that fits the original length.
+    return [regex]::Matches($Text, 'id:([`"])appServerCrash\.recoveryTitle\1,defaultMessage:\1Anti-Codex (?:hit a snag|crashed)\1').Count -eq 1 -and
+        [regex]::Matches($Text, 'id:[`"]appServerCrash\.feedbackGuidance[`"],defaultMessage:[`"]Send feedback to help us make the app better\.[`"]').Count -eq 1 -and
         [regex]::Matches($Text, 'id:[`"]appServerCrash\.recoveryTitle[`"],defaultMessage:[`"]ChatGPT hit a snag[`"]').Count -eq 0
 }
 
@@ -570,9 +572,7 @@ function Test-AntiCodexAsarPatches {
     }
     if ($ExpectedHostPatchRevision -in @(5, 6, 7)) {
         $v3CrashPatchValid = Test-AntiCodexCrashRecoveryV3 -Text $text
-        $modernCrashPatchValid = [regex]::Matches($text, 'id:`appServerCrash\.recoveryTitle`,defaultMessage:`Anti-Codex hit a snag`(?=\s*\})').Count -eq 1 -and
-            [regex]::Matches($text, 'id:[`"]appServerCrash\.feedbackGuidance[`"],defaultMessage:[`"]Send feedback to help us make the app better\.[`"],description:[`"][^`"]+[`"]').Count -eq 1 -and
-            [regex]::Matches($text, 'id:[`"]appServerCrash\.recoveryTitle[`"],defaultMessage:[`"]ChatGPT hit a snag[`"]').Count -eq 0
+        $modernCrashPatchValid = Test-AntiCodexModernCrashRecovery -Text $text
         $legacyCrashPatchValid = $crashTitleOriginalCount -eq 0 -and $crashDescriptionOriginalCount -eq 0 -and
             $crashTitlePatchedCount -eq 1 -and $crashDescriptionPatchedCount -eq 1 -and $crashRecoveryMarkerCount -eq 1 -and
             $appCrashConfigBindingValid -and $appCrashHandlerBindingValid -and

@@ -38,7 +38,7 @@ test("rollback host validation recognizes the branded product marker", () => {
 test("rollback host validation accepts the modern crash recovery page shape", () => {
   const script = readRollbackScript();
   assert.match(script, /function Test-AntiCodexModernCrashRecovery/);
-  assert.match(script, /\$modernCrashPatchValid = \[regex\]::Matches\(\$text, 'id:`appServerCrash\\.recoveryTitle`/);
+  assert.match(script, /\$modernCrashPatchValid = Test-AntiCodexModernCrashRecovery -Text \$text/);
   assert.match(script, /-not \$modernCrashPatchValid/);
 });
 
@@ -823,6 +823,7 @@ test("rollback patch compatibility accepts the current and supported predecessor
     const harness = join(fixture, "matrix.ps1");
     writeFileSync(harness, `$ErrorActionPreference = "Stop"
 ${extractFunction(rollback, "Test-AntiCodexCrashRecoveryV3")}
+${extractFunction(rollback, "Test-AntiCodexModernCrashRecovery")}
 ${asarValidator}
 ${patchSetValidator}
 function Accept-Asar([string]$Path, [int]$ExpectedConfigWrite, [int]$ExpectedDeferred, [int]$ExpectedFocusRestore, [int]$ExpectedLegacyRestore, [int]$ExpectedHostPatchRevision = 0) {
