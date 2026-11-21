@@ -77,7 +77,7 @@
 | **CodexPlusPlus 组件** | `2.6.7` | `%LOCALAPPDATA%\Anti-Codex\components\codexplusplus\codex-plus-plus.exe`（SHA256: `44f16e16...`） |
 | **Runtime** | 已同步 `6d943207` | 133 个文件校验通过，`state=validated`，Fixed Route `ready`，默认模型 `Antigravity 官方 · Gemini 4 Hydrogen (High)` |
 | **单元测试与总检** | 全绿 | `node --test --test-concurrency=2 translator/tests/` 1345/1345，`installed-overall-fast` (`ok: true`, 0 failures) |
-| **26.1117.4957 同步（2026-11-21）** | 已修 | 新版所有壳补丁原样适用；首次激活被回滚，原因是激活校验只认旧的崩溃页写法。现在激活校验和候选校验共用同一个检查，认新版的双引号、无描述格式；同步后实窗 Hydrogen High 3 轮（含命令、读文件、改文件）通过 |
+| **26.1117.4957 同步（2026-11-21）** | 已修 | 新版所有壳补丁原样适用；首次激活被回滚，原因是激活校验只认旧的崩溃页写法。现在激活校验和候选校验共用同一个检查，认新版的双引号、无描述格式；同步后实窗 Hydrogen High 3 轮（含命令、读文件、改文件）通过。复查：首次失败无残留（无候选、临时目录或多余进程）；回滚版本 3838 校验通过可退回；完整同步就绪检查与安装态总检 0 失败；同步后日志无错误；实窗 Argon High 3 轮通过，3 次工具调用全部 exit 0 |
 | **26.1117 壳补丁适配** | 已修 | app-server 会话参数改为同时补 1~2 个 bundle（新版在 `app-server-host.js` 与 `early-bootstrap-824-*.js` 各有一份）；“管理”入口适配新的独立设置组件；崩溃恢复文案描述字段改为可选并提供短文案；候选校验器同步认新标题 |
 | **官方通道工具稳定性** | 已修 | 有任何进度即重置空闲计时；工具执行/等待审批期间每 30 秒保活；高档位模型首包前可静默思考最长 15 分钟（客户端流空闲上限同步为 1050 秒）；CLI 进程退出后下一条消息自动开新会话并带上聊天记录，不再报错 |
 | **本轮审计修复（2026-11-20）** | 已修 | ① provider 边界体积检查改按 LF 计字节，CRLF 检出不再误报超限；② `antigravity-cascade-client` 测试原先会把假提示词（60000 个 D）写进用户真实 `prompt-snapshot.json`，现改写到临时目录（被污染的文件已移到 `conversation-backups\prompt-snapshot-test-pollution-20261120`；设置页该层暂显示「尚未捕获」，下次走桌面通道的请求会重新记录，官方通道不写此文件）；③ 官方 CLI 每轮都报 `missing project file default-cli-project.json`，现在建会话时预置该文件，错误行 6→0 |
