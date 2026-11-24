@@ -50,6 +50,26 @@ test("Codex 26.1103 compiler auth defaults and runtime requirements remain local
   assert.equal(brandPatchCompat.hasPatchedAuthRequirement(patched), true);
 });
 
+test("Codex 26.1120 inline auth state and fallback remain local to the copy", () => {
+  const declaration = brandPatcherSource.match(/function patchAuthRequirement[\s\S]*?(?=function patchOnboardingGate)/)[0];
+  const patch = new Function("replacePadded", "hasPatchedAuthRequirement", `${declaration};return patchAuthRequirement;`)(
+    (text, before, after) => text.replace(before, after + " ".repeat(before.length - after.length)), brandPatchCompat.hasPatchedAuthRequirement,
+  );
+  const source = 'function derive(a,u,d,r,l,I){return{authState:{retryAccountVerification:a,openAIAuth:u,authMethod:d,requiresAuth:"copilot"===d||(r?.requiresOpenaiAuth??!0),email:l?.type==="chatgpt"?l.email:null,planAtLogin:l?.type==="chatgpt"?l.planType:null,userId:null},fallback:I??{openAIAuth:null,authMethod:null,requiresAuth:!0,email:null,planAtLogin:null,userId:null}}}';
+  const patched = patch(source);
+  assert.equal(patched.length, source.length);
+  const derive = new Function(`${patched};return derive;`)();
+  const out = derive(null, null, null, {requiresOpenaiAuth: true}, {type: "chatgpt", email: "local@example.invalid", planType: "plus"}, null);
+  assert.equal(out.authState.requiresAuth, false);
+  assert.equal(out.authState.email, "local@example.invalid");
+  assert.equal(out.fallback.authMethod, "apikey");
+  assert.equal(out.fallback.requiresAuth, false);
+  assert.equal(out.fallback.userId, null);
+  assert.equal(patch(patched), patched);
+  assert.equal(brandPatchCompat.hasPatchedAuthRequirement(patched), true);
+  assert.equal(brandPatchCompat.hasPatchedAuthRequirement(source), false);
+});
+
 test("webpack anonymous route gate keeps the surrounding workspace readiness effect", () => {
   const source = 'let Q=function({auth:e,codexFeatureAccess:t,workspaceRootsIsLoading:h}){return e.isLoading?null:!e.authMethod&&e.requiresAuth?"login":h?null:"welcome"}({auth:a,codexFeatureAccess:I,workspaceRootsIsLoading:H}),Y=waiting;useEffect(()=>{if(!Q||Y)return;dispatch("electron-set-window-mode",{mode:Q})});let route={target:Q,path:J};';
   const patched = brandPatchCompat.patchAppRouteGate(source);

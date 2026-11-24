@@ -369,6 +369,19 @@ function patchAuthRequirement(text) {
     next = replacePadded(next, compilerRequirements[0][0], `let ${compilerRequirements[0].groups.name}=!1`);
     next = replacePadded(next, fallbacks[0][0], `${fallbacks[0].groups.prefix}{authMethod:\`apikey\`,requiresAuth:!1,`);
   }
+  // Codex 26.1120 inlines the runtime requirement in the returned auth state and keeps the
+  // compiler-style fallback object. Both must say no login is needed, so patch them together.
+  const inlineRequirement = /requiresAuth:"copilot"===[\w$]+\|\|\([\w$]+\?\.requiresOpenaiAuth\?\?![01]\)/g;
+  const inlineRequirements = [...next.matchAll(inlineRequirement)];
+  if (inlineRequirements.length) {
+    const fallback = /(?<prefix>[A-Za-z_$][\w$]*\?\?)\{openAIAuth:null,authMethod:null,requiresAuth:![01],/g;
+    const fallbacks = [...next.matchAll(fallback)];
+    if (inlineRequirements.length !== 1 || fallbacks.length !== 1) {
+      throw new Error("Expected one inline default and one runtime API auth state");
+    }
+    next = replacePadded(next, inlineRequirements[0][0], "requiresAuth:!1");
+    next = replacePadded(next, fallbacks[0][0], `${fallbacks[0].groups.prefix}{authMethod:\`apikey\`,requiresAuth:!1,`);
+  }
   if (next.includes("function _(){return{openAIAuth:null,authMethod:null,requiresAuth:!0,email:null,planAtLogin:null}}")) {
     next = replacePadded(
       next,
@@ -807,6 +820,7 @@ function findAuthRequirementPatch(fd, header, dataOffset) {
     const { buf } = readFileFromAsar(fd, entry, dataOffset);
     const text = buf.toString("utf8");
     if (/requiresAuth:"copilot"===[\w$]+\|\|\([\w$]+\.requiresOpenaiAuth\?\?![01]\)/.test(text) ||
+        /requiresAuth:"copilot"===[\w$]+\|\|\([\w$]+\?\.requiresOpenaiAuth\?\?![01]\)/.test(text) ||
         /let [\w$]+="copilot"===[\w$]+\|\|\([\w$]+\?\.requiresOpenaiAuth\?\?![01]\)(?=,[\w$]+=([\w$]+)\?\.type==="chatgpt"\?\1\.email:null)/.test(text) ||
         /[A-Za-z_$][\w$]*\?\.requiresAuth\?\?!0/.test(text) ||
         text.includes("function _(){return{openAIAuth:null,authMethod:null,requiresAuth:!0,email:null,planAtLogin:null}}") ||
