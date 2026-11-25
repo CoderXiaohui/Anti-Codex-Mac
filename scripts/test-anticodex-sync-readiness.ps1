@@ -531,6 +531,8 @@ function Test-ShortcutIconLocation {
     }
 }
 
+. (Join-Path $PSScriptRoot "anticodex-shortcut-appid.ps1")
+
 function Get-AntiCodexShortcutLauncherTarget {
     param([string]$Arguments)
 
@@ -884,6 +886,11 @@ if (-not $startMenuMainShortcutExists) {
         }
         if ($startMenuMainShortcutIconLocation -ine $expectedShortcutIconLocation) {
             Add-Failure "Start Menu Anti-Codex shortcut icon does not point at the verified Anti-Codex icon: $startMenuMainShortcutIconLocation"
+        }
+        # Without this ID, Windows notifications create a root Start Menu shortcut that skips the managed launcher.
+        $startMenuMainShortcutAppUserModelId = Get-AntiCodexShortcutAppUserModelId -Path $startMenuMainShortcut
+        if ($startMenuMainShortcutAppUserModelId -cne $script:AntiCodexAppUserModelId) {
+            Add-Failure "Start Menu Anti-Codex shortcut does not carry the Anti-Codex AppUserModelID: [$startMenuMainShortcutAppUserModelId]"
         }
     } catch {
         Add-Failure "Start Menu Anti-Codex shortcut inspection failed: $($_.Exception.Message)"

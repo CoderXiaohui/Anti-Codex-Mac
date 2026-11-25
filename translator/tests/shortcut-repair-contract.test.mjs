@@ -758,3 +758,22 @@ test("desktop residual ownership is based on shortcut target evidence, not its n
   assert.match(ownershipFunction[0], /\[string\]\$ShortcutInfo\.actualArguments/);
   assert.match(ownershipFunction[0], /\[string\]\$ShortcutInfo\.actualLauncherTarget/);
 });
+
+test("managed Start Menu shortcut carries the host AppUserModelID so notifications do not create a launcher-bypassing shortcut", () => {
+  const appIdHelperPath = resolve(root, "scripts", "anticodex-shortcut-appid.ps1");
+  assert.equal(existsSync(appIdHelperPath), true);
+  const appIdHelper = readFileSync(appIdHelperPath, "utf8");
+  assert.match(appIdHelper, /\$script:AntiCodexAppUserModelId = "AC"/);
+  assert.match(appIdHelper, /9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3/);
+
+  assert.match(repairScript, /\. \(Join-Path \$PSScriptRoot "anticodex-shortcut-appid\.ps1"\)/);
+  assert.match(
+    repairScript,
+    /New-AntiCodexShortcutSpec -Path \(Join-Path \$startMenuDir "Anti-Codex\.lnk"\)[^\n]*-AppUserModelId \$script:AntiCodexAppUserModelId/,
+  );
+  assert.match(repairScript, /Set-AntiCodexShortcutAppUserModelId -Path \$pendingShortcut/);
+  assert.match(repairScript, /\$descriptionMatches -and \$appUserModelIdMatches -and/);
+
+  assert.match(syncReadiness, /Start Menu Anti-Codex shortcut does not carry the Anti-Codex AppUserModelID/);
+  assert.match(runtimeSync, /"scripts\\anticodex-shortcut-appid\.ps1"/);
+});

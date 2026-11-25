@@ -325,6 +325,7 @@ $requiredSourceFiles = @(
     "scripts\anticodex-manager-inject.js",
     "scripts\anticodex-manager-open-inject.js",
     "scripts\anticodex-report-io.ps1",
+    "scripts\anticodex-shortcut-appid.ps1",
     "scripts\anticodex-powershell-json-invoke.ps1",
     "scripts\collect-anticodex-diagnostics.ps1",
     "scripts\protect-anticodex-log-db.mjs",

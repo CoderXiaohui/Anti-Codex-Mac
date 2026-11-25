@@ -482,6 +482,7 @@ if (-not $HostOnly) {
         (Join-Path $runtime "scripts\test-anticodex-gate8-autonomous-video.mjs"),
         (Join-Path $runtime "scripts\test-anticodex-shortcut-restore.ps1"),
         (Join-Path $runtime "scripts\anticodex-report-io.ps1"),
+        (Join-Path $runtime "scripts\anticodex-shortcut-appid.ps1"),
         (Join-Path $runtime "scripts\lib\anticodex-fixed-route.mjs"),
         (Join-Path $runtime "scripts\lib\anticodex-gate4-runtime.mjs"),
         (Join-Path $runtime "scripts\lib\anticodex-gate8-evidence.mjs"),

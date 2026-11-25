@@ -42,6 +42,8 @@ $programs = [Environment]::GetFolderPath("Programs")
 $startMenuDir = Join-Path $programs "Anti-Codex"
 $desktopShortcutIcon = if (Test-Path -LiteralPath $desktopIcon -PathType Leaf) { $desktopIcon } else { $hostIcon }
 
+. (Join-Path $PSScriptRoot "anticodex-shortcut-appid.ps1")
+
 function Get-AntiCodexShortcutLauncherTarget {
     param([string]$Arguments)
 
@@ -59,7 +61,8 @@ function New-AntiCodexShortcutSpec {
         [Parameter(Mandatory = $true)][string]$Description,
         [Parameter(Mandatory = $true)][string]$Icon,
         [switch]$InlineSupervisor,
-        [switch]$UseLaunchTask
+        [switch]$UseLaunchTask,
+        [string]$AppUserModelId = ""
     )
     $displayName = Split-Path -Leaf $Path
     $expectedArguments = if ($UseLaunchTask) {
@@ -83,6 +86,7 @@ function New-AntiCodexShortcutSpec {
         inlineSupervisor = [bool]$InlineSupervisor
         launchMode = if ($UseLaunchTask) { "shortcut-broker" } else { "powershell-direct" }
         useNativeLauncher = $false
+        expectedAppUserModelId = $AppUserModelId
     }
 }
 
@@ -443,7 +447,7 @@ function Set-AntiCodexUpdateTask {
 
 $shortcutSpecs = @(
     New-AntiCodexShortcutSpec -Path (Join-Path $desktop "Anti-Codex.lnk") -Script $shortcutBrokerScript -Description "Anti-Codex - Codex Desktop powered by Antigravity" -Icon $desktopShortcutIcon -UseLaunchTask
-    New-AntiCodexShortcutSpec -Path (Join-Path $startMenuDir "Anti-Codex.lnk") -Script $shortcutBrokerScript -Description "Anti-Codex - Codex Desktop powered by Antigravity" -Icon $hostIcon -UseLaunchTask
+    New-AntiCodexShortcutSpec -Path (Join-Path $startMenuDir "Anti-Codex.lnk") -Script $shortcutBrokerScript -Description "Anti-Codex - Codex Desktop powered by Antigravity" -Icon $hostIcon -UseLaunchTask -AppUserModelId $script:AntiCodexAppUserModelId
     New-AntiCodexShortcutSpec -Path (Join-Path $startMenuDir "Sync Anti-Codex with Codex.lnk") -Script $syncScript -Description "Rebuild Anti-Codex from the installed Codex Desktop host after Codex updates" -Icon $hostIcon
     New-AntiCodexShortcutSpec -Path (Join-Path $startMenuDir "Rollback Anti-Codex.lnk") -Script $rollbackScript -Description "Rollback Anti-Codex to the previous patched Codex host version" -Icon $hostIcon
     New-AntiCodexShortcutSpec -Path (Join-Path $startMenuDir "Manage Anti-Codex.lnk") -Script $managerScript -Description "Open the Anti-Codex maintenance and account manager" -Icon $hostIcon
@@ -668,6 +672,9 @@ function Get-AntiCodexShortcutEvidence {
     } else {
         Get-AntiCodexShortcutLauncherTarget $actualArguments
     }
+    $actualAppUserModelId = ""
+    try { $actualAppUserModelId = Get-AntiCodexShortcutAppUserModelId -Path $shortcutPath } catch {}
+    $appUserModelIdMatches = ($actualAppUserModelId -ceq [string]$Spec.expectedAppUserModelId)
     $displayName = Split-Path -Leaf $shortcutPath
     $launcherTargetMatches = ($actualLauncherTarget -and ($actualLauncherTarget -ieq [string]$Spec.expectedLauncherTarget))
     $scriptMatches = $launcherTargetMatches
@@ -679,7 +686,7 @@ function Get-AntiCodexShortcutEvidence {
     $forbiddenCodexBranding = ($displayName -notmatch "Anti-Codex") -or (($actualDescription -match "^Codex(\s|$)") -and ($actualDescription -notmatch "Anti-Codex"))
 
     return [pscustomobject]@{
-        ok = ($targetMatches -and $scriptMatches -and $argumentsMatches -and $iconMatches -and $displayNameMatches -and $descriptionMatches -and -not $forbiddenCodexBranding)
+        ok = ($targetMatches -and $scriptMatches -and $argumentsMatches -and $iconMatches -and $displayNameMatches -and $descriptionMatches -and $appUserModelIdMatches -and -not $forbiddenCodexBranding)
         path = $shortcutPath
         displayName = $displayName
         expectedDisplayName = [string]$Spec.expectedDisplayName
@@ -703,6 +710,9 @@ function Get-AntiCodexShortcutEvidence {
         argumentsMatches = $argumentsMatches
         iconMatches = $iconMatches
         descriptionMatches = $descriptionMatches
+        expectedAppUserModelId = [string]$Spec.expectedAppUserModelId
+        actualAppUserModelId = $actualAppUserModelId
+        appUserModelIdMatches = $appUserModelIdMatches
         forbiddenCodexBranding = $forbiddenCodexBranding
     }
 }
@@ -735,6 +745,9 @@ function Set-AntiCodexShortcut {
     } finally {
         if ($null -ne $shortcut) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shortcut) }
         if ($null -ne $shell) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell) }
+    }
+    if ([string]$Spec.expectedAppUserModelId) {
+        Set-AntiCodexShortcutAppUserModelId -Path $pendingShortcut -AppUserModelId ([string]$Spec.expectedAppUserModelId)
     }
 
     $shortcutInstalled = $false
