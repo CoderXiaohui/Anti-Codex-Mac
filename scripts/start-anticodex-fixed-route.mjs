@@ -10,6 +10,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeSync,
   writeFileSync,
 } from "node:fs";
@@ -1988,6 +1989,20 @@ async function startManagerWatcher(plan, childEnvironment) {
   return { watcher, watcherStartedAtMs };
 }
 
+// The Manager bridge logs every queue poll and health request, so its log only grows.
+// Start a fresh file once it passes this size and keep one previous copy for diagnosis.
+const MANAGER_BRIDGE_LOG_MAX_BYTES = 8 * 1024 * 1024;
+
+function openRotatedAppendLog(path) {
+  try {
+    if (statSync(path).size > MANAGER_BRIDGE_LOG_MAX_BYTES) {
+      rmSync(`${path}.1`, { force: true });
+      renameSync(path, `${path}.1`);
+    }
+  } catch {}
+  return openSync(path, "a");
+}
+
 async function startManagerBridge(plan, childEnvironment) {
   const root = resolve(import.meta.dirname, "..");
   const bridgeScript = join(root, "scripts", "anticodex-manager-bridge.mjs");
@@ -1995,7 +2010,7 @@ async function startManagerBridge(plan, childEnvironment) {
     throw new Error(`Fixed-route Manager support is incomplete: ${bridgeScript}`);
   }
   const managerEnvironment = managerSupportEnvironment(childEnvironment);
-  const bridgeLog = openSync(join(plan.paths.logs, "manager-bridge.log"), "a");
+  const bridgeLog = openRotatedAppendLog(join(plan.paths.logs, "manager-bridge.log"));
   const bridgeErrorLog = openSync(join(plan.paths.logs, "manager-bridge.err.log"), "a");
   const bridgeStartedAtMs = Date.now();
   const bridge = spawn(process.execPath, [

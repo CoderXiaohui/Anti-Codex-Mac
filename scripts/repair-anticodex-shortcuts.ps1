@@ -592,6 +592,65 @@ function Repair-AntiCodexResidualShortcuts {
     return $results.ToArray()
 }
 
+# The host notification module registers a new random-GUID toast activator under
+# HKCU\Software\Classes\CLSID on every launch and never removes the old ones.
+# Remove the stale ones. While Anti-Codex is running, keep the activator named by the
+# root Start Menu shortcut the host wrote for its current session; if that cannot be
+# identified, leave everything alone so a live notification is never broken.
+function Remove-AntiCodexStaleToastActivators {
+    $clsidRoot = "HKCU:\Software\Classes\CLSID"
+    $activatorName = "Anti-Codex Notification Activator"
+    $hostExecutable = Join-Path $hostRoot "Anti-Codex.exe"
+    $activators = @(
+        Get-ChildItem -LiteralPath $clsidRoot -ErrorAction SilentlyContinue | Where-Object {
+            $_.PSChildName -match '^\{[0-9A-Fa-f-]{36}\}$' -and
+            [string]$_.GetValue("") -ceq $activatorName
+        }
+    )
+    $hostIsRunning = @(
+        Get-Process -Name "Anti-Codex" -ErrorAction SilentlyContinue |
+            Where-Object { $_.Path -and ($_.Path -ieq $hostExecutable) }
+    ).Count -gt 0
+    $liveActivatorId = ""
+    $rootShortcutPath = Join-Path $programs "Anti-Codex.lnk"
+    if ($hostIsRunning -and (Test-Path -LiteralPath $rootShortcutPath -PathType Leaf)) {
+        $shell = New-Object -ComObject Shell.Application
+        try {
+            $rootShortcut = $shell.NameSpace($programs).ParseName("Anti-Codex.lnk")
+            if ($null -ne $rootShortcut) {
+                $liveActivatorId = [string]$rootShortcut.ExtendedProperty("System.AppUserModel.ToastActivatorCLSID")
+            }
+        } catch {
+        } finally {
+            [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell)
+        }
+    }
+    $removed = 0
+    $failed = 0
+    $skippedBecauseLiveUnknown = $hostIsRunning -and -not $liveActivatorId
+    if (-not $skippedBecauseLiveUnknown) {
+        foreach ($activator in $activators) {
+            if ($activator.PSChildName -ieq $liveActivatorId) { continue }
+            try {
+                Remove-Item -LiteralPath $activator.PSPath -Recurse -Force -ErrorAction Stop
+                $removed++
+            } catch {
+                $failed++
+            }
+        }
+    }
+    return [pscustomobject]@{
+        found = $activators.Count
+        removed = $removed
+        failed = $failed
+        keptActivatorId = $liveActivatorId
+        hostRunning = $hostIsRunning
+        skippedBecauseLiveUnknown = $skippedBecauseLiveUnknown
+    }
+}
+
+# Read the live activator before the residual cleanup below removes the root shortcut.
+$toastActivatorCleanup = Remove-AntiCodexStaleToastActivators
 $residualShortcutEvidence = @(Repair-AntiCodexResidualShortcuts)
 $residualShortcutFailures = @($residualShortcutEvidence | Where-Object { $_.action -ne "removed" -and $_.action -ne "preserved-native-codex" })
 $failures = New-Object System.Collections.Generic.List[string]
@@ -799,6 +858,7 @@ $result = [pscustomobject]@{
     reportedResidualShortcutCount = @($residualShortcutEvidence | Where-Object { $_.action -eq "reported" }).Count
     preservedNativeCodexShortcutCount = @($residualShortcutEvidence | Where-Object { $_.action -eq "preserved-native-codex" }).Count
     residualShortcuts = $residualShortcutEvidence
+    toastActivatorCleanup = $toastActivatorCleanup
     nativeLauncher = $nativeLauncherBuild
     launchTask = $launchTaskEvidence
     updateTask = $updateTaskEvidence

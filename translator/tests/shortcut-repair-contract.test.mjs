@@ -777,3 +777,15 @@ test("managed Start Menu shortcut carries the host AppUserModelID so notificatio
   assert.match(syncReadiness, /Start Menu Anti-Codex shortcut does not carry the Anti-Codex AppUserModelID/);
   assert.match(runtimeSync, /"scripts\\anticodex-shortcut-appid\.ps1"/);
 });
+test("shortcut repair removes stale host toast activators but never the live session's activator", () => {
+  const cleanup = repairScript.match(/function Remove-AntiCodexStaleToastActivators \{[\s\S]*?\n\}/);
+  assert.ok(cleanup, "missing toast activator cleanup");
+  assert.match(cleanup[0], /"Anti-Codex Notification Activator"/);
+  assert.match(cleanup[0], /-ceq \$activatorName/);
+  assert.match(cleanup[0], /System\.AppUserModel\.ToastActivatorCLSID/);
+  assert.match(cleanup[0], /\$skippedBecauseLiveUnknown = \$hostIsRunning -and -not \$liveActivatorId/);
+  assert.match(cleanup[0], /if \(\$activator\.PSChildName -ieq \$liveActivatorId\) \{ continue \}/);
+  const cleanupCall = repairScript.indexOf("$toastActivatorCleanup = Remove-AntiCodexStaleToastActivators");
+  const residualCall = repairScript.indexOf("$residualShortcutEvidence = @(Repair-AntiCodexResidualShortcuts)");
+  assert.ok(cleanupCall > 0 && cleanupCall < residualCall, "activator cleanup must read the root shortcut before residual cleanup removes it");
+});
