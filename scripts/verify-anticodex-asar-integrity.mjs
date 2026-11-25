@@ -31,7 +31,7 @@ export function readAsarHeader(fd) {
   };
 }
 
-function* walkFiles(node, prefix = "") {
+export function* walkFiles(node, prefix = "") {
   for (const [name, child] of Object.entries(node?.files ?? {})) {
     const rel = prefix ? `${prefix}/${name}` : name;
     if (child?.files) {

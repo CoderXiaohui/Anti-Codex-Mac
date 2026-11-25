@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { resolve } from "node:path";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 
@@ -10,6 +11,8 @@ import {
 } from "../provider/antigravity-acp-client.mjs";
 import { mapAntigravityProviderError } from "../antigravity-contract.mjs";
 
+const WORKSPACE = resolve("test-workspace");
+const GEMINI_DIR = resolve("test-profile", "gemini-private");
 const FAKE_EXECUTABLE = process.platform === "win32"
   ? "C:\\Trusted\\agy.exe"
   : "/trusted/agy";
@@ -171,9 +174,9 @@ test("opens a sandboxed ACP session with exact model, thinking level, appended i
   const fake = makeSpawner();
   const client = createAntigravityAcpClient({ spawn: fake.spawn, executablePath: FAKE_EXECUTABLE });
   const session = await client.open({
-    cwd: "C:\\workspace",
+    cwd: WORKSPACE,
     model: "gemini-4-argon-high",
-    geminiDir: "C:\\Users\\XD\\AppData\\Local\\Anti-Codex\\gemini-private",
+    geminiDir: GEMINI_DIR,
     systemInstructions: "Keep Codex as the tool executor.",
     toolServerUrl: "http://127.0.0.1:43123/mcp/0123456789abcdef0123456789abcdef",
     agentName: "codex-bridge",
@@ -185,7 +188,7 @@ test("opens a sandboxed ACP session with exact model, thinking level, appended i
     assert.deepEqual(fake.spawnCalls[0].args, [
       "acp",
       "--gemini-dir",
-      "C:\\Users\\XD\\AppData\\Local\\Anti-Codex\\gemini-private",
+      GEMINI_DIR,
       "--sandbox",
       "--agent",
       "codex-bridge",
@@ -234,7 +237,7 @@ test("uses an advertised legacy exact model value without silently switching mod
   }];
   const fake = makeSpawner({ configOptions });
   const client = createAntigravityAcpClient({ spawn: fake.spawn, executablePath: FAKE_EXECUTABLE });
-  const session = await client.open({ cwd: "C:\\workspace", model: "gemini-4-argon-high" });
+  const session = await client.open({ cwd: WORKSPACE, model: "gemini-4-argon-high" });
   try {
     assert.deepEqual(fake.children[0].messages
       .filter((message) => message.method === "session/set_config_option")
@@ -250,7 +253,7 @@ test("rejects unsupported instructions and models instead of falling back", asyn
   const noPromptCapability = makeSpawner({ systemPromptAppend: false });
   const first = createAntigravityAcpClient({ spawn: noPromptCapability.spawn, executablePath: FAKE_EXECUTABLE });
   await assert.rejects(
-    first.open({ cwd: "C:\\workspace", model: "gemini-4-argon-high", systemInstructions: "Required." }),
+    first.open({ cwd: WORKSPACE, model: "gemini-4-argon-high", systemInstructions: "Required." }),
     /systemPrompt\.append/i,
   );
   assert.equal(noPromptCapability.children[0].messages.some((message) => message.method === "session/new"), false);
@@ -268,7 +271,7 @@ test("rejects unsupported instructions and models instead of falling back", asyn
   });
   const second = createAntigravityAcpClient({ spawn: noHighEffort.spawn, executablePath: FAKE_EXECUTABLE });
   await assert.rejects(
-    second.open({ cwd: "C:\\workspace", model: "gemini-4-argon-high" }),
+    second.open({ cwd: WORKSPACE, model: "gemini-4-argon-high" }),
     /exact.*model|thinking level/i,
   );
   assert.equal(noHighEffort.children[0].exited, true);
@@ -295,7 +298,7 @@ test("preserves text/image prompt blocks and denies permission requests by defau
     },
   });
   const client = createAntigravityAcpClient({ spawn: fake.spawn, executablePath: FAKE_EXECUTABLE });
-  const session = await client.open({ cwd: "C:\\workspace", model: "gemini-4-argon" });
+  const session = await client.open({ cwd: WORKSPACE, model: "gemini-4-argon" });
   const textParts = [
     { type: "text", text: "Describe this image." },
     { type: "image", data: "aGVsbG8=", mimeType: "image/png" },
@@ -335,7 +338,7 @@ test("permission callback receives the full request and can approve only allow-o
   });
   const client = createAntigravityAcpClient({ spawn: fake.spawn, executablePath: FAKE_EXECUTABLE });
   const session = await client.open({
-    cwd: "C:\\workspace",
+    cwd: WORKSPACE,
     model: "gemini-4-argon",
     onPermissionRequest: (request) => {
       callbackRequest = request;
@@ -362,7 +365,7 @@ test("cancels a prompt through ACP and rejects pending requests when the process
     onPrompt(message) { promptId = message.id; },
   });
   const client = createAntigravityAcpClient({ spawn: fake.spawn, executablePath: FAKE_EXECUTABLE });
-  const session = await client.open({ cwd: "C:\\workspace", model: "gemini-4-argon" });
+  const session = await client.open({ cwd: WORKSPACE, model: "gemini-4-argon" });
   const controller = new AbortController();
   const prompt = session.prompt({ text: "Cancel me.", signal: controller.signal });
   try {
@@ -390,7 +393,7 @@ test("prompt timeout sends ACP cancellation and terminates the owned process", a
     closeTimeoutMs: 20,
     cancelGraceMs: 20,
   });
-  const session = await client.open({ cwd: "C:\\workspace", model: "gemini-4-argon" });
+  const session = await client.open({ cwd: WORKSPACE, model: "gemini-4-argon" });
 
   try {
     await assert.rejects(session.prompt({ text: "This prompt never finishes." }), /timed out after 20ms/);
@@ -419,7 +422,7 @@ test("a long prompt that keeps showing progress is not cut off by the idle limit
     },
   });
   const client = createAntigravityAcpClient({ spawn: fake.spawn, executablePath: FAKE_EXECUTABLE, promptTimeoutMs: 40 });
-  const session = await client.open({ cwd: "C:\\workspace", model: "gemini-4-argon" });
+  const session = await client.open({ cwd: WORKSPACE, model: "gemini-4-argon" });
   try {
     const result = await session.prompt({ text: "Work for a while.", onText() {} });
     assert.equal(result.stopReason, "end_turn");
@@ -432,7 +435,7 @@ test("rejects remote MCP URLs outside the fixed loopback secret route", async ()
   const fake = makeSpawner();
   const client = createAntigravityAcpClient({ spawn: fake.spawn, executablePath: FAKE_EXECUTABLE });
   await assert.rejects(
-    client.open({ cwd: "C:\\workspace", model: "gemini-4-argon", toolServerUrl: "http://example.com/mcp/secret" }),
+    client.open({ cwd: WORKSPACE, model: "gemini-4-argon", toolServerUrl: "http://example.com/mcp/secret" }),
     /127\.0\.0\.1.*mcp/i,
   );
   assert.equal(fake.spawnCalls.length, 0);
@@ -455,7 +458,7 @@ test("strips model-provider credentials from the ACP child environment while ret
   try {
     const fake = makeSpawner();
     const client = createAntigravityAcpClient({ spawn: fake.spawn, executablePath: FAKE_EXECUTABLE });
-    const session = await client.open({ cwd: "C:\\workspace", model: "gemini-4-argon" });
+    const session = await client.open({ cwd: WORKSPACE, model: "gemini-4-argon" });
     try {
       const childEnv = fake.spawnCalls[0].spawnOptions.env;
       for (const name of names) assert.equal(childEnv[name], undefined, `${name} must not reach agy`);
@@ -478,7 +481,7 @@ test("requires an absolute product-provided geminiDir", async () => {
   const fake = makeSpawner();
   const client = createAntigravityAcpClient({ spawn: fake.spawn, executablePath: FAKE_EXECUTABLE });
   await assert.rejects(
-    client.open({ cwd: "C:\\workspace", model: "gemini-4-argon", geminiDir: "relative\\gemini" }),
+    client.open({ cwd: WORKSPACE, model: "gemini-4-argon", geminiDir: "relative\\gemini" }),
     /geminiDir must be an absolute path/i,
   );
   assert.equal(fake.spawnCalls.length, 0);
@@ -502,7 +505,7 @@ test("preserves only explicit HTTP statuses from ACP JSON-RPC error data", async
     },
   });
   const client = createAntigravityAcpClient({ spawn: fake.spawn, executablePath: FAKE_EXECUTABLE });
-  const session = await client.open({ cwd: "C:\\workspace", model: "gemini-4-argon" });
+  const session = await client.open({ cwd: WORKSPACE, model: "gemini-4-argon" });
   try {
     for (const item of [
       { status: 429, data: { httpStatus: 429 }, message: "upstream request failed" },
@@ -534,7 +537,7 @@ test("does not infer ACP HTTP status from a negative JSON-RPC code or unmarked n
     },
   });
   const client = createAntigravityAcpClient({ spawn: fake.spawn, executablePath: FAKE_EXECUTABLE });
-  const session = await client.open({ cwd: "C:\\workspace", model: "gemini-4-argon" });
+  const session = await client.open({ cwd: WORKSPACE, model: "gemini-4-argon" });
   try {
     await assert.rejects(session.prompt({ text: "No explicit HTTP status." }), (error) => {
       assert.equal(error.acpHttpStatus, undefined);

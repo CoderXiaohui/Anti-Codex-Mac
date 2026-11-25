@@ -60,7 +60,7 @@ test("CodexPlusPlus keeps Antigravity and third-party relays resident at the sam
   const settings = buildCodexPlusPlusSettings({
     route: antigravity,
     relayRoutes: [antigravity, thirdParty],
-    userDataDir: "C:\\AntiCodex-Test\\electron",
+    userDataDir: join(tmpdir(), "AntiCodex-Test", "electron"),
   });
 
   assert.equal(settings.activeRelayId, ANTIGRAVITY_RELAY_ID);

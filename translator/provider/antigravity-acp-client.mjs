@@ -40,6 +40,7 @@ export function resolveAntigravityAcpExecutable(env = process.env) {
     }
   } else if (typeof env.HOME === "string" && env.HOME.trim()) {
     candidates.push(join(env.HOME, ".local", "bin", "agy"));
+    if (process.platform === "darwin") candidates.push("/opt/homebrew/bin/agy", "/usr/local/bin/agy");
   }
 
   for (const candidate of candidates) {

@@ -30,8 +30,8 @@ test("memory models follow the selected route while preserving memory controls",
 });
 
 test("Contract 1: Product paths are isolated under install/state roots and CodexPlusPlus binary is correct", () => {
-  const installRoot = "G:\\mock-install-root";
-  const stateRoot = "G:\\mock-state-root";
+  const installRoot = path.resolve("mock-install-root");
+  const stateRoot = path.resolve("mock-state-root");
 
   const resolved = resolveProductPaths(installRoot, stateRoot);
 

@@ -34,6 +34,8 @@ import {
   THIRD_PARTY_MODEL_SLOT,
   THIRD_PARTY_RELAY_ID,
   buildCodexPlusPlusSettings,
+  buildUnifiedModelCatalog,
+  selectNativeToolCatalogTemplate,
   generateRouteConfig,
   getCopiedClientArgs,
   getLauncherArgs,
@@ -42,6 +44,8 @@ import {
   resolveProductPaths,
   thirdPartyNativeModel,
 } from "./lib/anticodex-fixed-route.mjs";
+
+export { buildUnifiedModelCatalog };
 
 const COMPONENT_SCHEMA = "codexplusplus-component-manifest-v1";
 const STATUS_SCHEMA = "anticodex-fixed-route-status-v1";
@@ -1726,86 +1730,6 @@ export function buildThirdPartyModelCatalog(
   };
 }
 
-export function buildUnifiedModelCatalog(bundled, options = {}) {
-  const template = selectNativeToolCatalogTemplate(bundled);
-  if (!template) throw new Error("The copied Codex CLI returned no bundled model template.");
-  const antigravityCatalog = options.antigravityCatalog ?? { models: [] };
-  const antigravityModels = Array.isArray(antigravityCatalog.models)
-    ? antigravityCatalog.models
-    : [];
-  const thirdPartyContextWindow = contextWindow(
-    options.thirdPartyContextWindow ?? DEFAULT_THIRD_PARTY_CONTEXT_WINDOW,
-    DEFAULT_THIRD_PARTY_CONTEXT_WINDOW,
-  );
-  const thirdPartyModels = [];
-  const thirdPartySeen = new Set();
-  for (const value of [
-    options.thirdPartyModel,
-    ...(Array.isArray(options.thirdPartyModels) ? options.thirdPartyModels : []),
-  ]) {
-    const model = String(value ?? "").trim();
-    if (!model || thirdPartySeen.has(model)) continue;
-    thirdPartySeen.add(model);
-    thirdPartyModels.push(model);
-  }
-
-  const visibleModels = [];
-  const seenSlugs = new Set();
-  const add = (entry, visibility = "list") => {
-    const slug = String(entry?.slug ?? "").trim();
-    if (!slug || seenSlugs.has(slug)) return;
-    seenSlugs.add(slug);
-    const nativeEntry = normalizeNativeToolCapabilities(entry);
-    visibleModels.push({
-      ...nativeEntry,
-      slug,
-      visibility,
-      supported_in_api: true,
-      upgrade: null,
-      availability_nux: null,
-      priority: visibleModels.length,
-    });
-  };
-  for (const entry of options.officialModels ?? []) {
-    add(entry, entry.visibility === "hide" ? "hide" : "list");
-  }
-  const officialSlugs = new Set((options.officialModels ?? []).map(entry => entry.slug));
-  for (const entry of antigravityModels) {
-    if (!entry?.slug) continue;
-    // A desktop model the official CLI also serves already routes to the official entry; keep it
-    // resolvable for existing chats without listing the same model twice.
-    const servedOfficially = officialSlugs.has(OFFICIAL_MODEL_PREFIX + entry.slug);
-    add({ ...entry, display_name: "Antigravity · " + (entry.display_name || entry.slug) }, entry.visibility === "hide" || servedOfficially ? "hide" : "list");
-  }
-  for (const model of thirdPartyModels) {
-    add({
-      ...template,
-      slug: thirdPartyNativeModel(model),
-      display_name: `第三方 · ${model}`,
-      description: `第三方 API 模型 ${model}`,
-      context_window: thirdPartyContextWindow,
-      max_context_window: thirdPartyContextWindow,
-      effective_context_window_percent: 90,
-    });
-  }
-  add({
-    ...template,
-    slug: ANTIGRAVITY_MODEL_SLOT,
-    display_name: "Antigravity（当前模型）",
-    description: "使用管理页当前保存的 Antigravity 模型",
-  });
-  add({
-    ...template,
-    slug: THIRD_PARTY_MODEL_SLOT,
-    display_name: "第三方 API（当前模型）",
-    description: "使用管理页当前保存的第三方 API 模型",
-    context_window: thirdPartyContextWindow,
-    max_context_window: thirdPartyContextWindow,
-    effective_context_window_percent: 90,
-  });
-  return { ...bundled, models: visibleModels };
-}
-
 function readCatalogSafely(catalogPath) {
   if (!catalogPath || !existsSync(catalogPath)) return null;
   try {
@@ -1909,33 +1833,6 @@ function buildRuntimeCatalogFromBundled(bundled, availableModels) {
 
 function buildRuntimeCatalog(codexCli, availableModels) {
   return buildRuntimeCatalogFromBundled(readBundledCatalog(codexCli), availableModels);
-}
-
-function selectNativeToolCatalogTemplate(bundled) {
-  const models = Array.isArray(bundled?.models) ? bundled.models : [];
-  const template = models.find((entry) => entry?.visibility === "list"
-      && entry?.supported_in_api !== false
-      && entry?.shell_type === "shell_command"
-      && entry?.apply_patch_tool_type === "freeform"
-      && entry?.tool_mode !== "code_mode_only")
-    ?? models.find((entry) => entry?.visibility === "list"
-      && entry?.supported_in_api !== false
-      && entry?.shell_type === "shell_command"
-      && entry?.apply_patch_tool_type === "freeform")
-    ?? models.find((entry) => entry?.visibility === "list" && entry?.supported_in_api !== false)
-    ?? models[0];
-  return template ? normalizeNativeToolCapabilities(template) : template;
-}
-
-function normalizeNativeToolCapabilities(entry) {
-  if (!entry) return entry;
-  const { tool_mode: _codeOnlyMode, ...withoutCodeOnlyMode } = entry;
-  return {
-    ...withoutCodeOnlyMode,
-    shell_type: "shell_command",
-    apply_patch_tool_type: "freeform",
-    use_responses_lite: false,
-  };
 }
 
 function managerSupportEnvironment(childEnvironment) {

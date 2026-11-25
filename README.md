@@ -7,6 +7,7 @@
 ### 与原版双开共存的官方 Codex Desktop 隔离副本（Isolated Official Codex）
 
 [![平台](https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-0078D4?style=flat-square&logo=windows)](#四环境要求与前置条件)
+[![macOS](https://img.shields.io/badge/macOS-桌面版-555555?style=flat-square&logo=apple)](#macos-快速开始)
 [![架构](https://img.shields.io/badge/Architecture-三层锁定架构-EC4899?style=flat-square)](#二核心架构三层锁定设计)
 [![接入层](https://img.shields.io/badge/Provider-CodexPlusPlus%202.6.7-0EA5E9?style=flat-square)](#二核心架构三层锁定设计)
 [![适配路线](https://img.shields.io/badge/Antigravity-官方%20ACP%20与%20Desktop%20兼容路线-F59E0B?style=flat-square)](#antigravity-有两条明确路由)
@@ -18,7 +19,7 @@
 
 ---
 
-**Anti-Codex** 是一份与原版完全隔离、互不干扰的官方 Codex Desktop 副本（`isolated` `official Codex`）。它 **100% 保留官方 Codex 的原生界面、交互体验与底层代理引擎（`Codex` 独占规划、`tools`、终端命令、审批、重试与 `compaction`）**，仅替换模型提供方接入层——让你在不触碰原版官方客户端任何文件、账号令牌和历史记录的前提下，自由直连第三方 API，或使用本机已登录的 Antigravity 账号。
+**Anti-Codex** 是可与原版同时运行的 Codex Desktop 副本，支持 Windows 和 macOS。它使用原生聊天界面和代理引擎处理规划、工具调用、终端命令、审批、重试和上下文压缩。模型可来自第三方 API 或本机已登录的 Antigravity，副本单独保存配置和聊天记录。
 
 > [!IMPORTANT]
 > ### Antigravity 有两条明确路由
@@ -149,6 +150,21 @@ sequenceDiagram
 
 ## 四、环境要求与前置条件
 
+### macOS 快速开始
+
+本机需已安装官方 Codex Desktop 和 Xcode 命令行工具。安装器按应用标识识别 `Codex.app` 或 `ChatGPT.app`。准备好 Node.js 22 或更新版本，近期官方宿主自带的 Node.js 也可使用。在仓库根目录运行以下命令，也可以直接双击 `install-macos.command`。
+
+```sh
+./install-macos.command
+open "$HOME/Applications/Anti-Codex.app"
+```
+
+首次打开时选择第三方 API 或已登录的 Antigravity 官方 CLI。第三方 API 支持 Chat Completions 和 Responses，填入 Base URL 与 API Key 后即可选择模型。旧版 Desktop Cascade 入口仅在 Windows 上提供。
+
+副本的应用标识、用户主目录、Electron 数据、Codex 会话及 SQLite 数据库均独立。安装器仅读取官方应用包。首次构建需要联网，Rust 工具链缺失时会装入 Anti-Codex 自己的构建缓存。设置、更新、回滚和目录位置见 [macOS 使用指南](docs/MACOS.md)。
+
+### Windows 环境要求
+
 | 类别 | 具体要求 |
 | :--- | :--- |
 | **操作系统与宿主** | Windows 10 / 11（x64），本机已安装官方 **Codex Desktop**（Microsoft Store / WindowsApps 版本）。 |
@@ -161,7 +177,7 @@ sequenceDiagram
 
 ## 五、快速安装与日常使用
 
-### 第 1 步：一键安装
+### Windows 第 1 步：一键安装
 
 克隆或下载本仓库后，在仓库根目录直接双击运行：
 
@@ -267,6 +283,7 @@ node --test --test-concurrency=2 translator/tests/*.test.mjs
 ### 仓库文档导航
 
 - **English Documentation**：[README_EN.md](README_EN.md)
+- **macOS 安装与运行详解**：[docs/MACOS.md](docs/MACOS.md)
 - **Windows 安装与运行详解**：[docs/WINDOWS.md](docs/WINDOWS.md)
 - **三层锁定架构规范**：[docs/THREE_LAYER_ARCHITECTURE.md](docs/THREE_LAYER_ARCHITECTURE.md)
 - **自适应协议栈与路由边界**：[docs/ADAPTIVE_ONE_API_STACK.md](docs/ADAPTIVE_ONE_API_STACK.md)
@@ -289,7 +306,7 @@ node --test --test-concurrency=2 translator/tests/*.test.mjs
 
 ## English Quick Summary
 
-**Anti-Codex** is a guarded, `isolated` copy of the `official Codex` Desktop app for Windows (`Anti-Codex.exe` with a distinct pink icon). It keeps 100% of the native `Codex` UI, `tools`, terminal execution, approvals, retries, and `compaction`, swapping only the model provider layer:
+**Anti-Codex** is a guarded, `isolated` copy of the `official Codex` Desktop app for Windows and macOS. It keeps the native `Codex` UI, `tools`, terminal execution, approvals, retries, and `compaction`.
 - **Antigravity models** — Choose **Antigravity 官方** to use the signed-in Antigravity CLI. The legacy thin Chat-to-Cascade adapter requires the running Desktop app.
 - **Ordinary third-party APIs**: Handled directly by `CodexPlusPlus` (ordinary `third-party` traffic `bypasses` `Antigravity` completely — Antigravity does not need to be running).
 

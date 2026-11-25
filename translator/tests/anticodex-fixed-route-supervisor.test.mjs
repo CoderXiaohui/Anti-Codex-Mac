@@ -1181,7 +1181,7 @@ test("shared Codex home ignores the isolated Anti CODEX_HOME", () => {
     USERPROFILE: "C:\\Users\\XD",
     CODEX_HOME: "C:\\Users\\XD\\AppData\\Roaming\\anticodex\\codex-home-deepseek-app",
   });
-  assert.equal(plan.sharedCodexHome, resolve("C:\\Users\\XD\\.codex"));
+  assert.equal(plan.sharedCodexHome, resolve("C:\\Users\\XD", ".codex"));
 });
 
 test("Antigravity readiness verifies the selected model through the CodexPlusPlus proxy", async () => {

@@ -1,5 +1,7 @@
 import { isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 
+import { OFFICIAL_MODEL_PREFIX } from "../../translator/antigravity-contract.mjs";
+
 export const FIXED_ROUTE_SCHEMA = "anticodex-fixed-route-v1";
 const CODEX_THREAD_PROVIDER_NAME = "anticodex_antigravity";
 export const ANTIGRAVITY_RELAY_ID = "anticodex-antigravity";
@@ -99,6 +101,7 @@ export function generateRouteConfig(options = {}) {
   const catalogLine = options.catalogPath
     ? `model_catalog_json = ${tomlString(resolve(String(options.catalogPath)))}`
     : "";
+  const useNativeExecutionSettings = options.useNativeExecutionSettings === true;
   const config = [
     `model = ${tomlString(clientModel)}`,
     catalogLine,
@@ -106,9 +109,12 @@ export function generateRouteConfig(options = {}) {
     modelAutoCompactTokenLimit ? `model_auto_compact_token_limit = ${modelAutoCompactTokenLimit}` : "",
     modelAutoCompactTokenLimit ? 'model_auto_compact_token_limit_scope = "total"' : "",
     `model_provider = ${tomlString(providerName)}`,
-    "approval_policy = \"never\"",
-    "sandbox_mode = \"danger-full-access\"",
-    "allow_login_shell = false",
+    ...(options.fileCredentials ? ['cli_auth_credentials_store = "file"'] : []),
+    ...(useNativeExecutionSettings ? [] : [
+      "approval_policy = \"never\"",
+      "sandbox_mode = \"danger-full-access\"",
+      "allow_login_shell = false",
+    ]),
     provider === "antigravity" ? 'web_search = "disabled"' : "",
     "",
     `[model_providers.${providerName}]`,
@@ -124,6 +130,8 @@ export function generateRouteConfig(options = {}) {
 
   return {
     schema: FIXED_ROUTE_SCHEMA,
+    useNativeExecutionSettings,
+    fileCredentials: options.fileCredentials === true,
     provider,
     model,
     clientModel,
@@ -252,10 +260,11 @@ export function mergeCodexRouteConfig(existingConfig, route) {
     "model_provider",
     "chatgpt_base_url",
     "openai_base_url",
-    "approval_policy",
-    "sandbox_mode",
-    "allow_login_shell",
   ]);
+  if (!route.useNativeExecutionSettings) {
+    for (const key of ["approval_policy", "sandbox_mode", "allow_login_shell"]) managedKeys.add(key);
+  }
+  if (route.fileCredentials) managedKeys.add("cli_auth_credentials_store");
   if (route.provider === "antigravity") managedKeys.add("web_search");
   const preservedRoot = rootLines.filter((line) => {
     const match = /^\s*([A-Za-z0-9_]+)\s*=/.exec(line);
@@ -265,7 +274,7 @@ export function mergeCodexRouteConfig(existingConfig, route) {
   const providerSectionIndex = routeLines.findIndex((line) => /^\[model_providers\./.test(line));
   const managedRoot = routeLines.slice(0, providerSectionIndex).filter(Boolean);
   const managedSection = trimBoundaryBlankLines(routeLines.slice(providerSectionIndex));
-  return ensureUnifiedExecFeature([
+  const merged = [
     ...managedRoot,
     ...trimBoundaryBlankLines(preservedRoot),
     "",
@@ -273,7 +282,8 @@ export function mergeCodexRouteConfig(existingConfig, route) {
     "",
     ...managedSection,
     "",
-  ].join("\n").replace(/\n{3,}/g, "\n\n"));
+  ].join("\n").replace(/\n{3,}/g, "\n\n");
+  return route.useNativeExecutionSettings ? merged : ensureUnifiedExecFeature(merged);
 }
 
 export function isPathInsideRoot(candidate, root) {
@@ -331,6 +341,112 @@ function ensureUnifiedExecFeature(config) {
   start = filtered.findIndex((line) => /^\s*\[features\]\s*$/.test(line));
   filtered.splice(start + 1, 0, "unified_exec = true");
   return filtered.join("\n");
+}
+
+export function buildUnifiedModelCatalog(bundled, options = {}) {
+  const template = selectNativeToolCatalogTemplate(bundled);
+  if (!template) throw new Error("The copied Codex CLI returned no bundled model template.");
+  const antigravityCatalog = options.antigravityCatalog ?? { models: [] };
+  const antigravityModels = Array.isArray(antigravityCatalog.models)
+    ? antigravityCatalog.models
+    : [];
+  const thirdPartyContextWindow = requireContextWindow(
+    options.thirdPartyContextWindow ?? DEFAULT_THIRD_PARTY_CONTEXT_WINDOW,
+  );
+  const thirdPartyModels = [];
+  const thirdPartySeen = new Set();
+  for (const value of [
+    options.thirdPartyModel,
+    ...(Array.isArray(options.thirdPartyModels) ? options.thirdPartyModels : []),
+  ]) {
+    const model = String(value ?? "").trim();
+    if (!model || thirdPartySeen.has(model)) continue;
+    thirdPartySeen.add(model);
+    thirdPartyModels.push(model);
+  }
+
+  const visibleModels = [];
+  const seenSlugs = new Set();
+  const add = (entry, visibility = "list") => {
+    const slug = String(entry?.slug ?? "").trim();
+    if (!slug || seenSlugs.has(slug)) return;
+    seenSlugs.add(slug);
+    const nativeEntry = normalizeNativeToolCapabilities(entry);
+    visibleModels.push({
+      ...nativeEntry,
+      slug,
+      visibility,
+      supported_in_api: true,
+      upgrade: null,
+      availability_nux: null,
+      priority: visibleModels.length,
+    });
+  };
+  for (const entry of options.officialModels ?? []) {
+    add(entry, entry.visibility === "hide" ? "hide" : "list");
+  }
+  const officialSlugs = new Set((options.officialModels ?? []).map(entry => entry.slug));
+  for (const entry of antigravityModels) {
+    if (!entry?.slug) continue;
+    // A desktop model the official CLI also serves already routes to the official entry; keep it
+    // resolvable for existing chats without listing the same model twice.
+    const servedOfficially = officialSlugs.has(OFFICIAL_MODEL_PREFIX + entry.slug);
+    add({ ...entry, display_name: "Antigravity · " + (entry.display_name || entry.slug) }, entry.visibility === "hide" || servedOfficially ? "hide" : "list");
+  }
+  for (const model of thirdPartyModels) {
+    add({
+      ...template,
+      slug: thirdPartyNativeModel(model),
+      display_name: `第三方 · ${model}`,
+      description: `第三方 API 模型 ${model}`,
+      context_window: thirdPartyContextWindow,
+      max_context_window: thirdPartyContextWindow,
+      effective_context_window_percent: 90,
+    });
+  }
+  add({
+    ...template,
+    slug: ANTIGRAVITY_MODEL_SLOT,
+    display_name: "Antigravity（当前模型）",
+    description: "使用管理页当前保存的 Antigravity 模型",
+  });
+  add({
+    ...template,
+    slug: THIRD_PARTY_MODEL_SLOT,
+    display_name: "第三方 API（当前模型）",
+    description: "使用管理页当前保存的第三方 API 模型",
+    context_window: thirdPartyContextWindow,
+    max_context_window: thirdPartyContextWindow,
+    effective_context_window_percent: 90,
+  });
+  return { ...bundled, models: visibleModels };
+}
+
+export function selectNativeToolCatalogTemplate(bundled) {
+  const models = Array.isArray(bundled?.models) ? bundled.models : [];
+  const template = models.find((entry) => entry?.visibility === "list"
+      && entry?.supported_in_api !== false
+      && entry?.shell_type === "shell_command"
+      && entry?.apply_patch_tool_type === "freeform"
+      && entry?.tool_mode !== "code_mode_only")
+    ?? models.find((entry) => entry?.visibility === "list"
+      && entry?.supported_in_api !== false
+      && entry?.shell_type === "shell_command"
+      && entry?.apply_patch_tool_type === "freeform")
+    ?? models.find((entry) => entry?.visibility === "list" && entry?.supported_in_api !== false)
+    ?? models[0];
+  return template ? normalizeNativeToolCapabilities(template) : template;
+}
+
+function normalizeNativeToolCapabilities(entry) {
+  if (!entry) return entry;
+  const { tool_mode: _codeOnlyMode, ...withoutCodeOnlyMode } = entry;
+  return {
+    ...withoutCodeOnlyMode,
+    shell_type: "shell_command",
+    apply_patch_tool_type: "freeform",
+    use_responses_lite: false,
+  };
 }
 
 function normalizeThirdPartyProtocol(value) {

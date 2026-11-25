@@ -108,7 +108,7 @@ export function createOfficialAcpRoute({desktop, temp, officialModels, cachedDes
   }
   function dispatch(body) {
     const model = officialSlug(body?.model);
-    if (!model) return desktop;
+    if (!model && desktop) return desktop;
     if (!officialModels().some(entry => entry.slug === model && entry.visibility !== "hide")) {
       throw new ChatAdapterError("所选官方模型当前不可用，请刷新模型列表。", { statusCode: 400, code: "model_not_available" });
     }
@@ -133,13 +133,13 @@ export function createOfficialAcpRoute({desktop, temp, officialModels, cachedDes
   }
   return {
     account(options = {}) {
-      if (!options.model?.startsWith(OFFICIAL_MODEL_PREFIX)) return desktop.account(options);
+      if (desktop && !options.model?.startsWith(OFFICIAL_MODEL_PREFIX)) return desktop.account(options);
       return { object: "antigravity.account", provider: "antigravity-official", signedIn: null, identityAvailable: null };
     },
     async models(options) {
       const catalog = cachedDesktopModels
         ? { object: "list", data: cachedDesktopModels().map(listEntry) }
-        : await desktop.models(options);
+        : desktop ? await desktop.models(options) : { object: "list", data: [] };
       return { ...catalog, data: [...catalog.data, ...officialModels().map(listEntry)] };
     },
     async *stream(body, options) {
@@ -153,7 +153,7 @@ export function createOfficialAcpRoute({desktop, temp, officialModels, cachedDes
       const result = await adapter.complete(input(body), options);
       return adapter === desktop ? result : { ...result, model: body.model };
     },
-    getDiagnostics: () => desktop.getDiagnostics?.(),
+    getDiagnostics: () => desktop?.getDiagnostics?.(),
     // Each official session runs in its own CLI process that keeps the account it started with.
     // After an account switch, end them so the next message starts on the new account; the chat
     // history is replayed into the new session.
@@ -163,7 +163,7 @@ export function createOfficialAcpRoute({desktop, temp, officialModels, cachedDes
     },
     async close() {
       try {
-        const results = [...await closeRoutes(), ...await Promise.allSettled([desktop.close()])];
+        const results = [...await closeRoutes(), ...await Promise.allSettled([desktop?.close()])];
         const failed = results.find(result => result.status === "rejected");
         if (failed) throw failed.reason;
       } finally {

@@ -4,9 +4,10 @@
 
 <img src="assets/anticodex-desktop-icon.png" alt="Anti-Codex Pink Desktop Icon" width="136" />
 
-### Guarded, Isolated Official Codex Desktop Copy for Windows
+### Isolated Official Codex Desktop Copy for Windows and macOS
 
 [![Platform](https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-0078D4?style=flat-square&logo=windows)](#4-requirements--prerequisites)
+[![macOS](https://img.shields.io/badge/macOS-Desktop-555555?style=flat-square&logo=apple)](#macos-quick-start)
 [![Architecture](https://img.shields.io/badge/Architecture-Locked%203--Layer-EC4899?style=flat-square)](#2-core-architecture-locked-3-layer-design)
 [![Provider Layer](https://img.shields.io/badge/Provider-CodexPlusPlus%202.6.7-0EA5E9?style=flat-square)](#2-core-architecture-locked-3-layer-design)
 [![Antigravity](https://img.shields.io/badge/Antigravity-Model%20routes-F59E0B?style=flat-square)](#using-antigravity-models)
@@ -18,7 +19,7 @@
 
 ---
 
-**Anti-Codex** is a guarded, `isolated` copy of the `official Codex` Desktop application for Windows. It preserves **100% of the native `Codex` UI, workflow, and underlying agent harness (`Codex` exclusively owns planning, `tools`, terminal commands, file edits, approvals, retries, and `compaction`)** while replacing only the model provider layer — letting you connect directly to third-party APIs or reuse your local **Antigravity Desktop** models and quota without touching a single file or login token of your original Codex installation.
+**Anti-Codex** runs alongside the official Codex Desktop app on Windows and macOS. The native Codex interface and agent handle planning, tool calls, terminal commands, edits, approvals, retries and context compaction. You can connect a third-party API or a signed-in Antigravity account. The copy stores its own settings and chat history.
 
 > [!IMPORTANT]
 > ### Using Antigravity models
@@ -145,6 +146,19 @@ Keep Desktop signed in and running when using the legacy route or refreshing its
 
 ## 4. Requirements & Prerequisites
 
+### macOS quick start
+
+Install the official Codex Desktop app and Xcode Command Line Tools. The installer recognizes both `Codex.app` and `ChatGPT.app` by bundle ID. It uses Node.js 22 or later, including the copy bundled with recent official releases. Run these commands from the repository root.
+
+```sh
+./install-macos.command
+open "$HOME/Applications/Anti-Codex.app"
+```
+
+On first launch, choose a third-party Responses or Chat Completions API, or your signed-in Antigravity CLI. The installer builds the pinned CodexPlusPlus helper for the Mac and keeps a private Rust toolchain in its cache if needed. The copy has a separate bundle ID, home directory, Electron profile and chat database. Quit the copy and use `./install-macos.command --configure` to change providers. Re-run the installer to update, or pass `--rollback` to restore the preceding version. Legacy Desktop Cascade is available on Windows. [macOS guide (中文)](docs/MACOS.md)
+
+### Windows requirements
+
 | Category | Requirement |
 | :--- | :--- |
 | **OS & Base Client** | Windows 10 / 11 (x64) with the official **Codex Desktop** installed (Microsoft Store / WindowsApps). |
@@ -154,7 +168,7 @@ Keep Desktop signed in and running when using the legacy route or refreshing its
 
 ---
 
-## 5. Installation & Step-by-Step Usage
+## 5. Windows Installation & Step-by-Step Usage
 
 ### Step 1: First-Time Installation
 
