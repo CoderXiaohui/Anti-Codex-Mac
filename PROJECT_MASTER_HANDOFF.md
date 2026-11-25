@@ -71,12 +71,13 @@
 
 | 维度 | 当前状态 | 详细数据 / 证据 |
 |---|---|---|
-| **官方源版本** | `26.1120.5083.0` | `C:\Program Files\WindowsApps\OpenAI.Codex_26.1120.5083.0_x64__2p2nqsd0c76g0\app`（内置 codex-cli 0.171.0-alpha.13.2） |
-| **活动 Anti-Codex 宿主** | `26.1120.5083.0`（rev 7） | `%LOCALAPPDATA%\Anti-Codex\codex-patched-app`，更新检查 `up_to_date`、`drift=synced`，品牌、图标与宿主校验均通过 |
-| **回滚点宿主** | `26.1117.4957.0`（rev 7） | `%LOCALAPPDATA%\Anti-Codex\rollback-host`，`rollback-anticodex.ps1 -ValidateOnly` 校验通过，随时可一键回滚 |
+| **官方源版本** | `26.1120.6357.0` | `C:\Program Files\WindowsApps\OpenAI.Codex_26.1120.6357.0_x64__2p2nqsd0c76g0\app`（内置 codex-cli 0.171.0-alpha.13.2） |
+| **活动 Anti-Codex 宿主** | `26.1120.6357.0`（rev 7） | `%LOCALAPPDATA%\Anti-Codex\codex-patched-app`，更新检查 `up_to_date`、`drift=synced`，品牌、图标与宿主校验均通过 |
+| **回滚点宿主** | `26.1120.5083.0`（rev 7） | `%LOCALAPPDATA%\Anti-Codex\rollback-host`，`rollback-anticodex.ps1 -ValidateOnly` 校验通过，随时可一键回滚 |
 | **CodexPlusPlus 组件** | `2.6.7` | `%LOCALAPPDATA%\Anti-Codex\components\codexplusplus\codex-plus-plus.exe`（SHA256: `44f16e16...`） |
 | **Runtime** | 已同步 `f6913304` | 133 个文件校验通过，`state=validated`，Fixed Route `ready`，默认模型 `Antigravity 官方 · Gemini 4 Argon (High)` |
 | **单元测试与总检** | 全绿 | `node --test --test-concurrency=2 translator/tests/` 1346/1346，`installed-overall-fast` (`ok: true`, 0 failures)，`sync-readiness` (`ok: true`, 0 failures) |
+| **26.1120.6357 同步（2026-11-24）** | 已同步，无需改代码 | 先用新版离线副本试打补丁：23 处全部写入、0 跳过；专门核对认证，返回对象里的内联判断和兜底默认值都已改成不需要登录（剩下一处主进程连接检查旧版本来就有，不是新问题）。正式更新一次成功（无回滚）；更新检查 `up_to_date`、品牌/图标/宿主校验通过；安装态总检 0 失败；回滚到 5083 校验通过；无更新残留，主窗口 1 个。实窗 Hydrogen High 3 轮通过，3 次工具调用、无错误状态；测试聊天已清理，4 个早期聊天按哈希原样放回，共享 MCP 6/6 就绪。**注意**：官方命令行当前只提供 Hydrogen / 3.8 Flash / Sonnet 4.6 / Opus 4.6 / GPT-OSS，不提供“官方 · Argon”，配置仍写 Argon High，但界面自动显示为 Hydrogen High；这是账号/服务端模型列表变化，不是本次更新造成的 |
 | **26.1120.5083 同步（2026-11-24）** | 已修 | 新版把认证状态改成在返回对象里内联计算 `requiresAuth`，旧的认证补丁只认旧写法，漏掉了核心认证文件 `49792.*.js`，复制版会被当成需要 OpenAI 登录。现在内联写法和兜底默认值一起原位改成不需要登录，“已打补丁”识别同步认新写法，并补了回归测试。正式更新一次成功（无回滚），23 处补丁全部写入、0 跳过；活动宿主内已无未打补丁的认证默认值；同步后更新检查、安装态总检、完整同步就绪检查、回滚备份校验均 0 失败，更新日志无新错误；实窗 Argon High 3 轮通过，4 次工具调用（命令、读文件、改文件）全部 exit 0、无错误事件；测试聊天已清理，4 个早期聊天按哈希原样放回，模型重选回 Argon High。复查：无更新残留（候选、临时、交换目录都不存在），主窗口只有 1 个，计划任务正常；完整版安装态总检 11 项与完整版同步就绪检查均 0 失败；同步后日志只有已知无害的标题 400，无其他报错；换 Hydrogen High 实窗 3 轮通过，4 次工具调用全部 exit 0、无错误事件；测试聊天再次清理并放回 4 个早期聊天，模型重选回 Argon High，共享 MCP 6/6 就绪 |
 | **26.1117.4957 同步（2026-11-21）** | 已修 | 新版所有壳补丁原样适用；首次激活被回滚，原因是激活校验只认旧的崩溃页写法。现在激活校验和候选校验共用同一个检查，认新版的双引号、无描述格式；同步后实窗 Hydrogen High 3 轮（含命令、读文件、改文件）通过。复查：首次失败无残留（无候选、临时目录或多余进程）；回滚版本 3838 校验通过可退回；完整同步就绪检查与安装态总检 0 失败；同步后日志无错误；实窗 Argon High 3 轮通过，3 次工具调用全部 exit 0 |
 | **26.1117 壳补丁适配** | 已修 | app-server 会话参数改为同时补 1~2 个 bundle（新版在 `app-server-host.js` 与 `early-bootstrap-824-*.js` 各有一份）；“管理”入口适配新的独立设置组件；崩溃恢复文案描述字段改为可选并提供短文案；候选校验器同步认新标题 |
